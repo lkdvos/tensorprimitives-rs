@@ -356,11 +356,11 @@ one operand strided along `N`), from `mps-rs`'s `tc_small`. Baseline `8cda75e`.
 |---|---|---|---|
 | 1 | 251 → 41 | ~900 → 60 | 22 |
 | 4 | 461 → 153 | ~1300 → 170 | 171 |
-| 19 | 3780 → 3000 | ~5800 → 3050 | 2490 |
-| 64 | 38900 → 34000 | ~59000 → 34900 | 28300 |
+| 19 | 3780 → 2160 | ~5800 → ~2250 | 2490 |
+| 64 | 38900 → 19000 | ~59000 → ~19500 | 28300 |
 
 Per-run heap allocations 6 → 0. Direct-path selection rule (D64) against the
 per-cell best of direct vs packed on a 648-cell column-major GEMM grid (`m`
-1..64, `n` 8..4096, `k` 1..32): packed-only is 1.28x (`c64`) / 1.30x (`f64`) off
-in geomean; the shipped rule ~1.015x / ~1.01x. Notebook:
+1..64, `n` 8..4096, `k` 1..32): packed-only is 1.38x (`c64`) / 1.39x (`f64`) off
+in geomean; the shipped rule ~1.02x / ~1.01x. Notebook:
 [`small-contractions.md`](notebook/small-contractions.md).

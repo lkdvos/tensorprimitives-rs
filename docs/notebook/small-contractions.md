@@ -89,14 +89,22 @@ Run time of a reused plan, then `contract()` (plan + run), ns. Baseline is
 |---|---|---|---|---|---|
 | 1 | 251 | 41 | ~900–1600 | 60 | 22 |
 | 4 | 461 | 153 | ~1300 | 170 | 171 |
-| 19 | 3780 | 3000 | ~5800 | 3050 | 2490 |
-| 64 | 38900 | 34000 | ~59000 | 34900 | 28300 |
+| 19 | 3780 | 2160 | ~5800 | ~2250 | 2490 |
+| 64 | 38900 | 19000 | ~59000 | ~19500 | 28300 |
 
 Per-run heap allocations went from 6 (41–566 KB) to 0; `Plan::new` allocations
 from 37–48 to 19, and its time at `l = 64` from ~19 us to ~3.7 us.
 
-**What is still owed.** At `l = 19..64` the naive loop is still ~1.2x ahead: the
-remaining cost is the scattered `B` gather and `D` store along `N`. A second
+**Then the unit-stride chunks.** At `l = 19..64` the naive loop was still ~1.2x
+ahead, and the cost was the per-element scatter-table gather of `th` and store of
+`D` along `N`. In the MPS layout both are unit-stride along `l`, so a full
+8-wide chunk whose offsets are consecutive is now loaded and stored as one run.
+Reused-plan run: `l = 19` 2.81 → 2.16 us, `l = 64` 32.0 → 19.0 us — now ahead of
+the naive loop (2.50 and 28.4 us) at every size. The rule was re-fitted on the
+648-cell grid afterwards: `MACS` 2048 → 4096 (packed-only is now 38–39% off the
+oracle, the rule ~2% / ~1%).
+
+**What is still owed.** A second
 machine class (x86, where the direct path does not fuse unless built with
 `+fma`) has not been measured, so the rule's defaults are M5 numbers.
 

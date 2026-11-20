@@ -47,6 +47,17 @@ const W: usize = 8;
 /// Longest streamed line, i.e. the largest `k` this path accepts at all.
 const K_LINE: usize = 128;
 
+/// Whether `offs` is a run of consecutive offsets, `offs[t] = offs[0] + t`.
+#[inline(always)]
+fn unit_run(offs: &[i64]) -> bool {
+    let o0 = offs[0];
+    let mut ok = true;
+    for (t, &o) in offs.iter().enumerate() {
+        ok &= o == o0 + t as i64;
+    }
+    ok
+}
+
 /// Write `z` to the first `len` slots and hand them back as initialised.
 fn init_prefix<R: Copy>(buf: &mut [MaybeUninit<R>], len: usize, z: R) -> &mut [R] {
     let pre = &mut buf[..len];
@@ -77,15 +88,15 @@ fn mode() -> Mode {
 }
 
 /// The `auto` rule: direct when the whole contraction is at most
-/// `TENSORCONTRACT_DIRECT_MACS` multiply-adds (default 2048), or when the
+/// `TENSORCONTRACT_DIRECT_MACS` multiply-adds (default 4096), or when the
 /// smaller free extent is at most `TENSORCONTRACT_DIRECT_MINDIM` (default 4)
 /// and `k` is at most `TENSORCONTRACT_DIRECT_K` (default 32).
 ///
 /// Fitted on an Apple M5 (one machine, so a per-microarchitecture claim, A56)
 /// against a 648-cell grid of column-major GEMMs, `m` 1..64, `n` 8..4096,
-/// `k` 1..32, in `c64` and `f64`: within 1.5% (`c64`) and 0.9% (`f64`) geomean
-/// of choosing the faster arm per cell, where the packed path alone is 28%
-/// and 30% off it. The grid alone prefers a minimum dimension of 3, because
+/// `k` 1..32, in `c64` and `f64`: within 2.1% (`c64`) and 1.2% (`f64`) geomean
+/// of choosing the faster arm per cell, where the packed path alone is 38%
+/// and 39% off it (re-fitted after the unit-stride chunk paths). The grid alone prefers a minimum dimension of 3, because
 /// `m = 4` is exactly this machine's `c64` register block; 4 is chosen because
 /// on the MPS two-site gate (`m = 4`, `k = 4`, output strided along `N`) the
 /// direct path is ~10% faster than the packed one at `n` = 361 and 4096, and
@@ -99,9 +110,9 @@ struct Rule {
 
 fn rule() -> Rule {
     Rule {
-        macs: env_once!(u64, "TENSORCONTRACT_DIRECT_MACS", 2048, |v: &str| v
+        macs: env_once!(u64, "TENSORCONTRACT_DIRECT_MACS", 4096, |v: &str| v
             .parse()
-            .unwrap_or(2048)),
+            .unwrap_or(4096)),
         min_dim: env_once!(usize, "TENSORCONTRACT_DIRECT_MINDIM", 4, |v: &str| v
             .parse()
             .unwrap_or(4)),
@@ -216,16 +227,36 @@ pub(crate) unsafe fn execute<T: Element>(
             let w = W.min(sn - y0);
             // Streamed chunk, `k`-major: lane `t` of step `p` at `[p*W + t]`.
             // Lanes past `w` keep whatever they held; they are never stored.
-            for t in 0..w {
-                let sy = s_y[y0 + t];
+            // A full chunk whose streamed offsets are consecutive is a
+            // contiguous run per `k` step: load it as one, so the loads and
+            // the de-interleave vectorise instead of going through the
+            // scatter table per element.
+            let s_unit = w == W && unit_run(&s_y[y0..y0 + W]);
+            if s_unit {
+                let sy = s_y[y0];
                 for p in 0..k {
-                    let (re, im) = parts(*s_ptr.offset(s0 + (sy + s_k[p]) as isize), s_conj);
-                    cr[p * W + t] = re;
-                    if cplx {
-                        ci[p * W + t] = im;
+                    let base = s_ptr.offset(s0 + (sy + s_k[p]) as isize);
+                    for t in 0..W {
+                        let (re, im) = parts(*base.add(t), s_conj);
+                        cr[p * W + t] = re;
+                        if cplx {
+                            ci[p * W + t] = im;
+                        }
+                    }
+                }
+            } else {
+                for t in 0..w {
+                    let sy = s_y[y0 + t];
+                    for p in 0..k {
+                        let (re, im) = parts(*s_ptr.offset(s0 + (sy + s_k[p]) as isize), s_conj);
+                        cr[p * W + t] = re;
+                        if cplx {
+                            ci[p * W + t] = im;
+                        }
                     }
                 }
             }
+            let d_unit = w == W && !read_c && !plan.conj_d && unit_run(&d_y[y0..y0 + W]);
             for x in 0..gn {
                 // Complex: four real accumulators (the 4m form), so every
                 // step is a fused multiply-add and the two subtractions happen
@@ -261,6 +292,15 @@ pub(crate) unsafe fn execute<T: Element>(
                     }
                 }
                 let (dx, cx) = (d_x[x], c_x.get(x).copied().unwrap_or(0));
+                if d_unit && alpha == T::one() {
+                    // Contiguous output run, plain store: one interleaving
+                    // vector store per lane pair instead of a scatter.
+                    let base = d.offset(dh + (dx + d_y[y0]) as isize);
+                    for t in 0..W {
+                        *base.add(t) = T::from_parts(ar[t], ai[t]);
+                    }
+                    continue;
+                }
                 for t in 0..w {
                     let y = y0 + t;
                     let mut val = alpha.mul(T::from_parts(ar[t], ai[t]));
