@@ -440,9 +440,16 @@ pub(crate) unsafe fn execute_capped<T>(
     // The stride between slices is the *worst-case* sliver size, `kc` deep and
     // not `pc_len` deep, precisely so that two groups sitting on different `pc`
     // blocks at the same moment still cannot overlap.
-    let ap_len = panel_len(mc, mr, kc, ukr.a_pack);
+    //
+    // "Worst case" is `min(kc, k)`, not `kc`: no `pc` block is deeper than the
+    // contraction itself, and slivers are packed `pc_len` deep. Sizing by the
+    // blocking `kc` alone allocated 41 KB of panel for a 64-byte `k = 4`
+    // contraction. This changes only the allocation, never the blocking, so it
+    // is not the `min(k, KC)` re-derivation the NOTE above warns about.
+    let kc_buf = kc.min(k.max(1));
+    let ap_len = panel_len(mc, mr, kc_buf, ukr.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
-    let b_group = panel_len(group_cap * nr, nr, kc, ukr.b_pack);
+    let b_group = panel_len(group_cap * nr, nr, kc_buf, ukr.b_pack);
     let mut bp = Panel::<T::Real>::new(pn * b_group);
 
     let cx = Ctx::<T> {
