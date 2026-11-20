@@ -116,12 +116,12 @@
 
 use std::sync::Barrier;
 
-use crate::buffer::Panel;
+use crate::buffer::{Panel, Scratch};
 use crate::element::Element;
 use crate::kernel::{config_for_plan, Blocking, KernelSet, Ukr};
 use crate::pack::{pack_panel, panel_len};
 use crate::plan::Plan;
-use crate::scatter::{build_block_scatter, IRREGULAR};
+use crate::scatter::IRREGULAR;
 use crate::writeback::{scale_only, writeback};
 
 /// A raw pointer shared across the threads of one [`execute`] call.
@@ -383,18 +383,19 @@ pub(crate) unsafe fn execute_capped<T>(
         return;
     }
 
-    // Block-scatter metadata. Cheap (O(M/MR + N/NR)) and element-type
-    // dependent only through MR/NR, so it lives here rather than in the plan.
-    let a_m_bs = build_block_scatter(am, mr);
-    let b_n_bs = build_block_scatter(bn, nr);
-    // Row block scatter for the output too: the write-back uses it exactly as
-    // packing uses the operands', to keep scatter-table loads out of its
-    // innermost loop. `C` is only consulted when beta is nonzero.
-    let d_m_bs = build_block_scatter(dm, mr);
-    let c_m_bs = if beta == T::zero() {
-        Vec::new()
+    // Block-scatter metadata. Element-type dependent only through MR/NR and
+    // the orientation, so it is cached in the plan under that key (the first
+    // key a plan runs with; any other rebuilds per call). `C`'s row block
+    // scatter is consulted only when beta is nonzero, and is built lazily.
+    let mut fresh = None;
+    let bs = plan.bs_cache.get((mr, nr, swap), am, bn, dm, &mut fresh);
+    let a_m_bs: &[i64] = &bs.a_m;
+    let b_n_bs: &[i64] = &bs.b_n;
+    let d_m_bs: &[i64] = &bs.d_m;
+    let c_m_bs: &[i64] = if beta == T::zero() {
+        &[]
     } else {
-        build_block_scatter(cm, mr)
+        bs.c_m(cm, mr)
     };
 
     // NOTE (Phase 4): `cfg.blk` is still the untouched Phase 2 heuristic, and
@@ -450,7 +451,21 @@ pub(crate) unsafe fn execute_capped<T>(
     let ap_len = panel_len(mc, mr, kc_buf, ukr.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
     let b_group = panel_len(group_cap * nr, nr, kc_buf, ukr.b_pack);
-    let mut bp = Panel::<T::Real>::new(pn * b_group);
+    let bp_len = pn * b_group;
+
+    // The serial path can reuse a per-thread scratch buffer for all three
+    // panels. The threaded path always allocates (see `scratch_reuse`).
+    let mut scratch = None;
+    let mut bp_own = None;
+    let mut serial_ptrs = None;
+    let bp_ptr = match serial_scratch::<T::Real>(p, bp_len, ap_len, ukr.tile) {
+        Some((s, [bp, ap, tile])) => {
+            scratch = Some(s);
+            serial_ptrs = Some((ap, tile));
+            bp
+        }
+        None => bp_own.insert(Panel::<T::Real>::new(bp_len)).as_mut_ptr(),
+    };
 
     let cx = Ctx::<T> {
         plan,
@@ -474,10 +489,10 @@ pub(crate) unsafe fn execute_capped<T>(
         dn,
         ha,
         hb,
-        a_m_bs: &a_m_bs,
-        b_n_bs: &b_n_bs,
-        d_m_bs: &d_m_bs,
-        c_m_bs: &c_m_bs,
+        a_m_bs,
+        b_n_bs,
+        d_m_bs,
+        c_m_bs,
         conj_a,
         conj_b,
         alpha,
@@ -486,13 +501,21 @@ pub(crate) unsafe fn execute_capped<T>(
         b: Shared(ptr_b as *mut T),
         c: Shared(c as *mut T),
         d: Shared(d),
-        bp: Shared(bp.as_mut_ptr()),
+        bp: Shared(bp_ptr),
     };
 
     if p == 1 {
-        let mut ap = Panel::<T::Real>::new(ap_len);
-        let mut tile = Panel::<T::Real>::new(ukr.tile);
-        run_strip::<T>(&cx, 0, m, ap.as_mut_ptr(), tile.as_mut_ptr(), BPart::SERIAL);
+        match serial_ptrs {
+            Some((ap, tile)) => run_strip::<T>(&cx, 0, m, ap, tile, BPart::SERIAL),
+            None => {
+                let mut ap = Panel::<T::Real>::new(ap_len);
+                let mut tile = Panel::<T::Real>::new(ukr.tile);
+                run_strip::<T>(&cx, 0, m, ap.as_mut_ptr(), tile.as_mut_ptr(), BPart::SERIAL);
+            }
+        }
+        if let Some(s) = scratch {
+            SCRATCH.with(|c| c.set(Some(s)));
+        }
         return;
     }
 
@@ -544,6 +567,47 @@ pub(crate) unsafe fn execute_capped<T>(
             scope.spawn(move || cell(t));
         }
     });
+}
+
+thread_local! {
+    /// This thread's reusable serial-path buffer. `take`n for the duration of a
+    /// call and put back after, so a re-entrant call finds it empty and simply
+    /// allocates instead of aliasing it.
+    static SCRATCH: core::cell::Cell<Option<Scratch>> = const { core::cell::Cell::new(None) };
+}
+
+/// Total panel bytes above which the serial path allocates fresh rather than
+/// keep the memory pinned per thread. Allocation cost is noise against that
+/// much work, and the retained buffer would otherwise sit at its high-water
+/// mark for the life of the thread.
+const SCRATCH_MAX_BYTES: usize = 1 << 20;
+
+/// `TENSORCONTRACT_SCRATCH=reuse|fresh` (default `reuse`), read once per
+/// process. `fresh` is the old behaviour -- three heap allocations per serial
+/// run -- kept reachable so both arms can be A/B'd in one build (A15). The
+/// threaded path ignores it: reused buffer addresses were measured to hurt the
+/// thread pool on one machine (A55).
+fn scratch_reuse() -> bool {
+    env_once!(bool, "TENSORCONTRACT_SCRATCH", true, |v: &str| v != "fresh")
+}
+
+/// The `[B panel, A panel, tile]` pointers out of this thread's scratch, with
+/// the scratch itself (to be put back by the caller), when this call is serial,
+/// small, and reuse is on.
+#[allow(clippy::type_complexity)]
+fn serial_scratch<R>(
+    p: usize,
+    bp_len: usize,
+    ap_len: usize,
+    tile_len: usize,
+) -> Option<(Scratch, [*mut R; 3])> {
+    let bytes = (bp_len + ap_len + tile_len + 3) * core::mem::size_of::<R>() + 3 * 64;
+    if p != 1 || bytes > SCRATCH_MAX_BYTES || !scratch_reuse() {
+        return None;
+    }
+    let mut s = SCRATCH.with(|c| c.take()).unwrap_or_else(Scratch::empty);
+    let ptrs = s.carve3::<R>(bp_len, ap_len, tile_len);
+    Some((s, ptrs))
 }
 
 /// Loops 5 through 1 over one cell of the `pm x pn` partition.

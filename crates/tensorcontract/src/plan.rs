@@ -294,6 +294,14 @@ pub struct Plan {
     pub(crate) conj_b: bool,
     pub(crate) conj_c: bool,
     pub(crate) conj_d: bool,
+    /// Per-operand `(lo, hi)` extremes of `row + col + hadamard` offsets, for
+    /// `A`, `B`, `D` and `C` in that order. Fixed at construction so that the
+    /// bounds check in [`Plan::run`] is O(1) rather than a scan of all twelve
+    /// scatter vectors per call.
+    pub(crate) extents: [(i64, i64); 4],
+    /// Block-scatter metadata for the first `(mr, nr, orientation)` this plan
+    /// executed with; see [`crate::scatter::BlockScatterCache`].
+    pub(crate) bs_cache: crate::scatter::BlockScatterCache,
     /// Overrides the element-type-derived cache blocking when set.
     pub(crate) blocking: Option<crate::kernel::Blocking>,
     /// Overrides the default complex method when set.
@@ -304,6 +312,18 @@ pub struct Plan {
     /// it is the answer to "what did the index analysis actually decide", which
     /// nothing else reports.
     pub stats: PlanStats,
+}
+
+/// Smallest and largest offset reachable from three independent scatter
+/// vectors: the sum of each vector's own minimum and maximum (0 when empty).
+fn extremes(parts: [&[i64]; 3]) -> (i64, i64) {
+    let mut lo = 0i64;
+    let mut hi = 0i64;
+    for p in parts {
+        lo += p.iter().copied().min().unwrap_or(0);
+        hi += p.iter().copied().max().unwrap_or(0);
+    }
+    (lo, hi)
 }
 
 impl Plan {
@@ -488,7 +508,16 @@ impl Plan {
         let d_m_run = run_structure(&d_m).unwrap_or((d_m.len(), 0));
         let d_n_run = run_structure(&d_n).unwrap_or((d_n.len(), 0));
 
+        let extents = [
+            extremes([&a_m, &a_k, &h_a]),
+            extremes([&b_k, &b_n, &h_b]),
+            extremes([&d_m, &d_n, &h_d]),
+            extremes([&c_m, &c_n, &h_c]),
+        ];
+
         Ok(Plan {
+            extents,
+            bs_cache: Default::default(),
             a_m,
             a_k,
             b_k,

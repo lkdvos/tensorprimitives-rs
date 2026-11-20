@@ -141,6 +141,84 @@ pub fn build_block_scatter(scat: &[i64], blk: usize) -> Vec<i64> {
     out
 }
 
+/// The block-scatter vectors one execution needs, built for a fixed register
+/// block and orientation.
+///
+/// `c_m` is built on first use only: it is consulted just when `beta` is
+/// nonzero, and the common `beta == 0` call never pays for it.
+#[derive(Clone, Debug)]
+pub(crate) struct BlockScatterSet {
+    pub a_m: Vec<i64>,
+    pub b_n: Vec<i64>,
+    pub d_m: Vec<i64>,
+    c_m: std::sync::OnceLock<Vec<i64>>,
+}
+
+impl BlockScatterSet {
+    /// `am`, `bn`, `dm` are the oriented row scatters of the row operand, the
+    /// column operand and the output.
+    pub fn build(am: &[i64], bn: &[i64], dm: &[i64], mr: usize, nr: usize) -> Self {
+        BlockScatterSet {
+            a_m: build_block_scatter(am, mr),
+            b_n: build_block_scatter(bn, nr),
+            d_m: build_block_scatter(dm, mr),
+            c_m: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// `C`'s row block scatter, built on the first call.
+    pub fn c_m(&self, cm: &[i64], mr: usize) -> &[i64] {
+        self.c_m.get_or_init(|| build_block_scatter(cm, mr))
+    }
+}
+
+/// A plan's cache of its [`BlockScatterSet`].
+///
+/// The set is a pure function of the plan's scatters and of `(mr, nr, swap)`,
+/// and the plan's scatters never change after construction, so it can live in
+/// the plan. It holds the **first** key a plan executes with and nothing else:
+/// a plan is almost always run at one element type, and a second key (an `f32`
+/// run of a plan first run as `c64`, say) just builds its own set per call, as
+/// every run did before. That keeps the cache a single `OnceLock` -- no lock,
+/// no map, `Send + Sync` for free -- at the price of the unusual case staying
+/// at the old speed.
+///
+/// `TENSORCONTRACT_BSCACHE=off` bypasses it, for A/B against the rebuilt-per-run
+/// behaviour.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BlockScatterCache(std::sync::OnceLock<((usize, usize, bool), BlockScatterSet)>);
+
+impl BlockScatterCache {
+    /// The set for `(mr, nr, swap)`: the cached one when the key matches,
+    /// otherwise `fresh` holds a newly built one.
+    pub fn get<'a>(
+        &'a self,
+        key: (usize, usize, bool),
+        am: &[i64],
+        bn: &[i64],
+        dm: &[i64],
+        fresh: &'a mut Option<BlockScatterSet>,
+    ) -> &'a BlockScatterSet {
+        if cache_enabled() {
+            let (k, set) = self
+                .0
+                .get_or_init(|| (key, BlockScatterSet::build(am, bn, dm, key.0, key.1)));
+            if *k == key {
+                return set;
+            }
+        }
+        fresh.insert(BlockScatterSet::build(am, bn, dm, key.0, key.1))
+    }
+}
+
+/// `TENSORCONTRACT_BSCACHE=off|on` (default on), read once per process.
+fn cache_enabled() -> bool {
+    env_once!(bool, "TENSORCONTRACT_BSCACHE", true, |v: &str| !matches!(
+        v,
+        "off" | "0" | "fresh"
+    ))
+}
+
 /// Common difference of a run, or [`IRREGULAR`].
 #[inline]
 fn run_stride(run: &[i64]) -> i64 {
