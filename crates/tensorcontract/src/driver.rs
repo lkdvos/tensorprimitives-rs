@@ -312,6 +312,15 @@ pub(crate) unsafe fn execute_capped<T>(
         return;
     }
 
+    // Too shallow to pay for packing: a plain loop over the scatter vectors.
+    // Decided before the kernel config is even looked up, because at this size
+    // that lookup is itself a visible fraction of the call.
+    if crate::direct::use_direct(plan) {
+        // SAFETY: forwarded unchanged; `use_direct` established its precondition.
+        unsafe { crate::direct::execute(plan, alpha, a, b, beta, c, d) };
+        return;
+    }
+
     // `MR` is a plan-level choice, not just a kernel constant: it sets the
     // granularity at which the output's row scatter is blocked, and so which
     // write-back path each block takes. See `Plan::row_block`.

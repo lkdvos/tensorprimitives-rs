@@ -326,7 +326,7 @@ two that change the arithmetic.** The blanket claim that used to stand here —
 nothing in the suite pins it.
 
 * **Bitwise identical:** `THREADS`, `PARTITION`, `POOL`, `L3_DOMAINS`,
-  `WRITEBACK`, `ORIENT`, `ROWBLOCK` and the blocking overrides. These change how
+  `WRITEBACK`, `ORIENT`, `ROWBLOCK`, `SCRATCH`, `BSCACHE` and the blocking overrides. These change how
   the work is split and in what order panels are packed, never what arithmetic is
   performed on which values: every output element has one owning thread
   accumulating over the full contracted extent in the original order.
@@ -334,7 +334,9 @@ nothing in the suite pins it.
   writes `acc += a * b` — two roundings, which LLVM may not contract under IEEE
   rules — while every vector kernel body uses a true FMA, which is one. And
   `TENSORCONTRACT_COMPLEX=3m`, which computes three products where planar
-  computes four; `tests/conformance.rs` already says so in as many words.
+  computes four; `tests/conformance.rs` already says so in as many words. And
+  `TENSORCONTRACT_DIRECT`, whose unpacked path fuses only where FMA is baseline
+  and sums complex products as four real planes.
 
 The consequence for an A/B is small but real: comparing two *kernels* or two
 *complex methods* is comparing two implementations of the same contraction to
@@ -356,6 +358,9 @@ statement, not a performance one — the timing methodology is unaffected.
 | `TENSORCONTRACT_ORIENT` | `none` \| `swap`: pin the row/column orientation; `legacy`: the Phase 4.1 rule |
 | `TENSORCONTRACT_WRITEBACK` | `gather` forces the general scatter write-back |
 | `TENSORCONTRACT_ROWBLOCK` | `base` \| `auto` \| `mr=<n>` \| `idx=<i>`: pin the micro-tile row block. **Use `idx=`** — the menu is keyed by *position* (D43), so two entries may share an `MR` and differ only in `NR`, and `mr=<n>` resolves to the first entry of that height. `idx=3` reaches the `32x5` shape A35 is about |
+| `TENSORCONTRACT_DIRECT` | `auto` (default) \| `on` \| `off`: the unpacked small-contraction path in `direct.rs`. `auto` takes it when `macs <= _DIRECT_MACS` (2048) or `min(m,n) <= _DIRECT_MINDIM` (4) with `k <= _DIRECT_K` (32); fitted on one machine (M5), so per-microarchitecture. `on` forces it wherever the gathered block fits, which is how CI runs the whole suite through it. **Not bitwise identical** to the packed path (FMA only where baseline, 4m complex summation), but independent of `THREADS` |
+| `TENSORCONTRACT_SCRATCH` | `reuse` (default) \| `fresh`: serial-path pack panels and tile come from a per-thread buffer (capped at 1 MiB) instead of three allocations per run. Bitwise identical |
+| `TENSORCONTRACT_BSCACHE` | `on` (default) \| `off`: cache the block-scatter tables in the plan under the first `(MR, NR, orientation)` it runs with. Bitwise identical |
 
 `Plan::with_complex_method`, `Plan::with_threads` and `Plan::with_blocking` are
 the programmatic equivalents and take precedence.

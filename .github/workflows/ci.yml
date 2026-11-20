@@ -215,6 +215,15 @@ jobs:
       - run: cargo test --workspace --release
         env:
           TENSORCONTRACT_ORIENT: legacy
+      # Both arms of the direct (unpacked) small-contraction path: `on` sends
+      # every contraction whose gathered block fits through it, `off` keeps the
+      # tiny shapes the default rule would divert on the packed driver.
+      - run: cargo test --workspace --release
+        env:
+          TENSORCONTRACT_DIRECT: "on"
+      - run: cargo test --workspace --release
+        env:
+          TENSORCONTRACT_DIRECT: "off"
 
   # Feature combinations of the published crate. Nothing else checks either end
   # of the range.

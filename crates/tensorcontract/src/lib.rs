@@ -331,6 +331,7 @@ macro_rules! env_once {
 #[cfg(feature = "std")]
 pub mod batch;
 mod buffer;
+mod direct;
 mod driver;
 mod pack;
 #[cfg(feature = "std")]

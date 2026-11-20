@@ -59,6 +59,15 @@ pub trait Real:
     /// Lossy for wider types, which is acceptable because nothing computational
     /// depends on it.
     fn to_f64(self) -> f64;
+
+    /// `self * b + c`, fused into one rounding where that is a single
+    /// instruction on the build target. Used by the direct (unpacked) path's
+    /// accumulation; the default is the unfused expression, which is always
+    /// correct.
+    #[inline(always)]
+    fn mul_add(self, b: Self, c: Self) -> Self {
+        self * b + c
+    }
 }
 
 macro_rules! impl_real {
@@ -74,6 +83,13 @@ macro_rules! impl_real {
             #[inline(always)]
             fn to_f64(self) -> f64 {
                 self as f64
+            }
+            // Only where FMA is baseline for the target: elsewhere
+            // `<$t>::mul_add` is a libm call, far slower than two roundings.
+            #[cfg(all(feature = "std", any(target_arch = "aarch64", target_feature = "fma")))]
+            #[inline(always)]
+            fn mul_add(self, b: Self, c: Self) -> Self {
+                <$t>::mul_add(self, b, c)
             }
         }
     };
