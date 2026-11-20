@@ -25,6 +25,7 @@ Live chapters first, closed phases last.
 | [`packaging.md`](packaging.md) | Phase 5 parts 1, 2, C-surface interlude | quality gates, the API tiers, the TAPP conformance suite, the C header and consumer, cross-compilation, the JLL and the Julia package |
 | [`baselines.md`](baselines.md) | Phase 5 part 3 | the engine against TBLIS and TTGT, re-measured; A44–A46 |
 | [`apple-silicon.md`](apple-silicon.md) | parts 20–22 | a fourth machine and a third ISA: what the portable path really cost, the Darwin cache probe, the NEON register blocks measured with a floor, and what the NEON kernel is worth end to end; A57–A62 |
+| [`small-contractions.md`](small-contractions.md) | part 23 | the per-call floor, the direct (unpacked) path and its rule, the plan cache; MPS gate numbers; D64–D67 |
 | [`archive-phases-1-3.md`](archive-phases-1-3.md) | Phases 1, 2, 2b, 3 | closed and unlikely to reopen: the premise check, the correct engine, the three methods, the AVX-512 kernels |
 
 ## Part number → chapter

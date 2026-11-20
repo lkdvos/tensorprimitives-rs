@@ -344,3 +344,23 @@ that is what `--stress ragged` is for.
 
 "The corpus is fully regular" is false, and repeating it steered conclusions for
 three phases.
+
+## 8. Small contractions, Apple M5 (part 23)
+
+Single thread, no pinning, one session with other compiles intermittently in
+flight; interleaved A/B, so ratios are readable on this machine only. The case is
+the MPS two-site gate on qubits (`c64`, `m = 4`, `k = 4`, `n = l^2`, output and
+one operand strided along `N`), from `mps-rs`'s `tc_small`. Baseline `8cda75e`.
+
+| `l` | reused-plan run, ns: baseline → now | `contract()`, ns: baseline → now | naive loop, ns |
+|---|---|---|---|
+| 1 | 251 → 41 | ~900 → 60 | 22 |
+| 4 | 461 → 153 | ~1300 → 170 | 171 |
+| 19 | 3780 → 3000 | ~5800 → 3050 | 2490 |
+| 64 | 38900 → 34000 | ~59000 → 34900 | 28300 |
+
+Per-run heap allocations 6 → 0. Direct-path selection rule (D64) against the
+per-cell best of direct vs packed on a 648-cell column-major GEMM grid (`m`
+1..64, `n` 8..4096, `k` 1..32): packed-only is 1.28x (`c64`) / 1.30x (`f64`) off
+in geomean; the shipped rule ~1.015x / ~1.01x. Notebook:
+[`small-contractions.md`](notebook/small-contractions.md).

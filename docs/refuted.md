@@ -1099,3 +1099,52 @@ consequence from a symbol count.
 
 **What would reopen it.** Nothing. Keep both installs: the `auto` build is what
 every committed number used, so prefer it wherever it runs.
+
+## Padding-aware row-block choice for small `m` (part 23)
+
+**Tried.** QuasiStrided.jl picks the micro-tile minimising padded work when `M`
+or `N` is below a tile. Candidate rules over the existing menus (no register
+block changed): minimise `ceil(m/MR)*MR` with menu order as tie-break; the same
+with `N` padding; thresholded variants; padded rows weighted by each entry's
+large-`m` throughput.
+
+**Expected / what happened.** Expected a clear win for `m` in 5..64. Measured on
+an Apple M5, col-major GEMMs, `m` in {5..64}, `n` in {64, 512}, `k` in {16, 64,
+256}, `f64`/`c64`/`f32`/`c32`, every menu entry pinned with `ROWBLOCK=idx=`,
+`DIRECT=off`: the plain padding rule is **1.021** geomean over the current rule
+with a **0.839** worst cell; adding `N` padding is worse; the peak-weighted
+variant reaches 1.037 but is fitted on the same grid, hard-codes M5 constants and
+has a 0.735 worst cell. The per-cell oracle is 1.03–1.11 ahead, but the wins are
+a handful of cells (`f64` `m = 20, 24` on `8x6`; `c64` `m = 5, 6, 10` on `2x12`),
+and at `m = 5, 6` padding waste is effectively free — the padding-minimising
+entry is *slower*. End-to-end order among entries follows kernel peak, not
+padding.
+
+**Confidence.** `measured once`, one machine, noisy session (other compiles in
+flight; per-cell best of nine repeats, `auto`/`idx0` spread 0.84–1.11).
+
+**Evidence.** `scratch/tilebench/` outside the repo (`results_best3.csv`,
+`score.py`, `score2.py`); notebook `small-contractions.md`.
+
+**What would reopen it.** A quiet machine with three arms and a floor (D56), and a
+second machine class; or a menu change that makes padding, rather than kernel
+peak, the dominant difference between entries.
+
+## Hoisting the tile-format dispatch out of the write-back loop (part 23)
+
+**Tried.** `tile_value` matches on a run-time `TileFormat` per element inside the
+write-back's inner loop; dispatching once per tile into per-format
+instantiations should let the plane recombination vectorise.
+
+**Expected / what happened.** Expected a visible share of the write-back's ~21%
+of run time at `k = 16`. Measured within **1%** on `c64` at `m x n x k` =
+16x4096x16, 64x4096x16, 64x512x64, 256x256x256 (Apple M5, three interleaved
+repeats): LLVM had already unswitched the `match`.
+
+**Confidence.** `measured once`, one machine.
+
+**Evidence.** notebook `small-contractions.md`. Not committed.
+
+**What would reopen it.** Nothing about this change. The write-back cost itself
+is real; the candidate is a fused store from registers into `D` (no tile buffer),
+which needs per-ISA kernel variants.

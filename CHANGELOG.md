@@ -26,6 +26,35 @@ the part a prospective dependant most needs, and it has no KaC category.
   cleanly. Nothing in the engine or the ABI changed. The `consistency` job therefore
   checks four version statements, not five.
 
+### Added — small contractions
+
+* **A direct (unpacked) path** for contractions too shallow or narrow to
+  amortise packing: the smaller-extent operand is gathered onto the stack, the
+  other streamed in 8-wide register-accumulated chunks, with no heap allocation,
+  kernel dispatch or write-back pass. `TENSORCONTRACT_DIRECT=auto|on|off`;
+  `auto` takes it when `macs <= 2048` or `min(m,n) <= 4` with `k <= 32` (D64).
+  Not bitwise identical to the packed path; independent of the thread count.
+* **`contract()` caches plans**, 16 per thread, keyed by everything `Plan::new`
+  reads; `TENSORCONTRACT_PLANCACHE` (D67).
+* **`Real::mul_add`**, a defaulted trait method; `f32`/`f64` fuse only where
+  FMA is baseline for the target (D65).
+
+### Changed — per-call cost
+
+* `Plan::run` on the serial path no longer allocates: pack panels are sized by
+  `min(kc, k)` and come from a per-thread scratch (`TENSORCONTRACT_SCRATCH`),
+  block-scatter tables are cached in the plan (`TENSORCONTRACT_BSCACHE`), the
+  bounds check is O(1), and `TENSORCONTRACT_KC_COUPLE` is read once (D66).
+* `Plan::new` builds scatter vectors with a contiguous inner loop and derives
+  run structure from the folded axes: ~5x faster at 4096 elements per operand,
+  19 allocations instead of 37–48.
+
+### Confidence — small contractions
+
+| Component | Status |
+|---|---|
+| Direct path and per-call changes | **Correctness tested** — the whole suite runs through both `DIRECT` arms in CI, and every new switch's off arm passes. **Performance measured on one machine** (Apple M5, unpinned, part 23): an MPS gate's reused-plan run is 6.1x faster at 64 bytes and 1.14x at 262 KB, `contract()` ~15x and 1.7x. The `auto` rule's thresholds are fitted there and are a per-microarchitecture claim (A56); x86, where the direct path fuses only with `+fma`, is unmeasured |
+
 Note for whoever opens this section: the release procedure changed
 after 0.1.0 shipped — `RELEASING.md` step 2 is now a single
 `gh release create --target`, because pushing the tag first loses an unwinnable
