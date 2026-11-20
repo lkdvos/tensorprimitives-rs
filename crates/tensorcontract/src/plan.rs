@@ -370,14 +370,18 @@ impl Plan {
         let ra = reduce_tensor("A", a.layout, a.idx)?;
         let rb = reduce_tensor("B", b.layout, b.idx)?;
         let rd = reduce_tensor("D", d.layout, d.idx)?;
-        let rc = match c {
-            Some(c) => reduce_tensor("C", c.layout, c.idx)?,
+        let rc_own;
+        let rc: &[(i64, i64, i64)] = match c {
+            Some(c) => {
+                rc_own = reduce_tensor("C", c.layout, c.idx)?;
+                &rc_own
+            }
             // No C operand: mirror D so the C scatter vectors are well formed
             // and simply never read (beta is forced to zero).
-            None => rd.clone(),
+            None => &rd,
         };
 
-        let mut labels: Vec<LabelInfo> = Vec::new();
+        let mut labels: Vec<LabelInfo> = Vec::with_capacity(ra.len() + rb.len() + rd.len());
         merge_into(&mut labels, &ra, |l, e, s| {
             l.sa = s;
             l.in_a = true;
@@ -388,7 +392,7 @@ impl Plan {
             l.in_b = true;
             let _ = e;
         })?;
-        merge_into(&mut labels, &rc, |l, e, s| {
+        merge_into(&mut labels, rc, |l, e, s| {
             l.sc = s;
             l.in_c = true;
             let _ = e;
@@ -404,9 +408,9 @@ impl Plan {
             return Err(Error::OutputLabelMismatch);
         }
 
-        let mut m_ax = Vec::new();
-        let mut n_ax = Vec::new();
-        let mut k_ax = Vec::new();
+        let mut m_ax = Vec::with_capacity(labels.len());
+        let mut n_ax = Vec::with_capacity(labels.len());
+        let mut k_ax = Vec::with_capacity(labels.len());
         let mut h_ax = Vec::new();
 
         for l in &labels {
@@ -485,8 +489,8 @@ impl Plan {
             h_axes: h_ax,
         };
 
-        let d_m_run = run_structure(&d_m).unwrap_or((d_m.len(), 0));
-        let d_n_run = run_structure(&d_n).unwrap_or((d_n.len(), 0));
+        let d_m_run = run_of_axes(&stats.m_axes, &d_m);
+        let d_n_run = run_of_axes(&stats.n_axes, &d_n);
 
         Ok(Plan {
             a_m,
@@ -1263,10 +1267,13 @@ fn merge_into(
 }
 
 /// Merge adjacent axes whose strides are compatible in every operand.
-fn fold_axes(axes: Vec<Axis>) -> Vec<Axis> {
-    let mut out: Vec<Axis> = Vec::with_capacity(axes.len());
-    for ax in axes {
-        if let Some(p) = out.last_mut() {
+fn fold_axes(mut axes: Vec<Axis>) -> Vec<Axis> {
+    // In place: `w` is the number of folded axes kept so far.
+    let mut w = 0;
+    for r in 0..axes.len() {
+        let ax = axes[r];
+        if w > 0 {
+            let p = &mut axes[w - 1];
             if ax.sa == p.sa * p.extent
                 && ax.sb == p.sb * p.extent
                 && ax.sc == p.sc * p.extent
@@ -1276,9 +1283,11 @@ fn fold_axes(axes: Vec<Axis>) -> Vec<Axis> {
                 continue;
             }
         }
-        out.push(ax);
+        axes[w] = ax;
+        w += 1;
     }
-    out
+    axes.truncate(w);
+    axes
 }
 
 /// Whether the extents of these `(label, extent, stride)` triples overflow an
@@ -1298,9 +1307,56 @@ fn product_overflows(axes: &[(i64, i64, i64)]) -> bool {
 }
 
 fn build_scatter_for(axes: &[Axis], pick: impl Fn(&Axis) -> i64) -> Vec<i64> {
+    const N: usize = 8;
+    if axes.len() <= N {
+        let mut extents = [0i64; N];
+        let mut strides = [0i64; N];
+        for (i, a) in axes.iter().enumerate() {
+            extents[i] = a.extent;
+            strides[i] = pick(a);
+        }
+        return build_scatter(&extents[..axes.len()], &strides[..axes.len()]);
+    }
     let extents: Vec<i64> = axes.iter().map(|a| a.extent).collect();
     let strides: Vec<i64> = axes.iter().map(pick).collect();
     build_scatter(&extents, &strides)
+}
+
+/// `run_structure(scat).unwrap_or((scat.len(), 0))` for the D scatter of the
+/// folded `axes`, computed from the axes where that is provably identical.
+///
+/// Within the first axis consecutive entries differ by its stride `s0`. At a
+/// carry into axis `d` they differ by `s_d - sum_{j<d} (e_j - 1) s_j`. If none
+/// of those equals `s0`, the maximal runs are exactly the first axis, `(e0,
+/// s0)`. A boundary that does equal `s0` makes the structure depend on which
+/// carries it is, so that rare case scans the vector.
+fn run_of_axes(axes: &[Axis], scat: &[i64]) -> (usize, i64) {
+    let fast = match axes {
+        [] => None,
+        [a] if a.extent >= 2 => Some((a.extent as usize, a.sd)),
+        [a, rest @ ..] if a.extent >= 2 && !scat.is_empty() => {
+            let s0 = a.sd;
+            let mut drop = (a.extent - 1).wrapping_mul(s0);
+            let mut ok = true;
+            for x in rest {
+                if x.sd.wrapping_sub(drop) == s0 {
+                    ok = false;
+                    break;
+                }
+                drop = drop.wrapping_add((x.extent - 1).wrapping_mul(x.sd));
+            }
+            ok.then_some((a.extent as usize, s0))
+        }
+        _ => None,
+    };
+    let scanned = run_structure(scat).unwrap_or((scat.len(), 0));
+    match fast {
+        Some(f) => {
+            debug_assert_eq!(f, scanned);
+            f
+        }
+        None => scanned,
+    }
 }
 
 #[cfg(test)]

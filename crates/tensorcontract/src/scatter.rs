@@ -82,19 +82,34 @@ pub fn build_scatter(extents: &[i64], strides: &[i64]) -> Vec<i64> {
         return out;
     }
 
-    // Odometer over the mixed-radix multi-index.
-    let n = extents.len();
-    let mut counter = vec![0i64; n];
-    let mut offset = 0i64;
-    for _ in 0..total {
-        out.push(offset);
-        for d in 0..n {
+    // The innermost axis is a tight contiguous loop; the odometer only runs
+    // over the outer axes, once per inner run.
+    let n0 = extents[0] as usize;
+    let s0 = strides[0];
+    let outer = extents.len() - 1;
+    let mut small = [0i64; 8];
+    let mut heap;
+    let counter: &mut [i64] = if outer <= small.len() {
+        &mut small[..outer]
+    } else {
+        heap = vec![0i64; outer];
+        &mut heap
+    };
+    let mut base = 0i64;
+    for _ in 0..total / n0 {
+        let mut o = base;
+        for _ in 0..n0 {
+            out.push(o);
+            o = o.wrapping_add(s0);
+        }
+        for d in 0..outer {
+            let (e, s) = (extents[d + 1], strides[d + 1]);
             counter[d] += 1;
-            offset += strides[d];
-            if counter[d] < extents[d] {
+            base += s;
+            if counter[d] < e {
                 break;
             }
-            offset -= strides[d] * extents[d];
+            base -= s * e;
             counter[d] = 0;
         }
     }
@@ -253,6 +268,72 @@ pub fn regular_fraction(bs: &[i64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original element-at-a-time odometer, kept as an oracle.
+    fn build_scatter_oracle(extents: &[i64], strides: &[i64]) -> Vec<i64> {
+        let total: i64 = extents.iter().product();
+        let total = total.max(0) as usize;
+        let mut out = Vec::with_capacity(total);
+        if total == 0 {
+            return out;
+        }
+        if extents.is_empty() {
+            out.push(0);
+            return out;
+        }
+        let n = extents.len();
+        let mut counter = vec![0i64; n];
+        let mut offset = 0i64;
+        for _ in 0..total {
+            out.push(offset);
+            for d in 0..n {
+                counter[d] += 1;
+                offset += strides[d];
+                if counter[d] < extents[d] {
+                    break;
+                }
+                offset -= strides[d] * extents[d];
+                counter[d] = 0;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn build_scatter_matches_oracle() {
+        // Small xorshift so the test needs no dependency.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move |m: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % m
+        };
+        for _ in 0..3000 {
+            let rank = rnd(12) as usize; // includes 0 and > 8 (heap counter)
+            let mut ext: Vec<i64> = (0..rank).map(|_| rnd(4) as i64).collect();
+            // Zero extents are rare enough to leave most cases non-empty,
+            // but cap the total so rank 11 stays cheap.
+            while ext.iter().product::<i64>() > 5000 {
+                let i = rnd(rank as u64) as usize;
+                ext[i] = 1.max(ext[i] / 2);
+            }
+            if rnd(5) != 0 {
+                for e in &mut ext {
+                    *e = (*e).max(1);
+                }
+            }
+            let strides: Vec<i64> = (0..rank).map(|_| rnd(41) as i64 - 20).collect();
+            assert_eq!(
+                build_scatter(&ext, &strides),
+                build_scatter_oracle(&ext, &strides),
+                "extents {ext:?} strides {strides:?}"
+            );
+        }
+        assert_eq!(build_scatter(&[], &[]), vec![0]);
+        assert!(build_scatter(&[3, 0], &[1, 3]).is_empty());
+        assert!(build_scatter(&[0, 3], &[1, 3]).is_empty());
+    }
 
     #[test]
     fn scatter_column_major() {
