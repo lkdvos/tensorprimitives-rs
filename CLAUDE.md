@@ -326,7 +326,7 @@ two that change the arithmetic.** The blanket claim that used to stand here —
 nothing in the suite pins it.
 
 * **Bitwise identical:** `THREADS`, `PARTITION`, `POOL`, `L3_DOMAINS`,
-  `WRITEBACK`, `ORIENT`, `ROWBLOCK`, `SCRATCH`, `BSCACHE` and the blocking overrides. These change how
+  `WRITEBACK`, `ORIENT`, `ROWBLOCK`, `SCRATCH`, `BSCACHE`, `PLANCACHE` and the blocking overrides. These change how
   the work is split and in what order panels are packed, never what arithmetic is
   performed on which values: every output element has one owning thread
   accumulating over the full contracted extent in the original order.
@@ -361,6 +361,7 @@ statement, not a performance one — the timing methodology is unaffected.
 | `TENSORCONTRACT_DIRECT` | `auto` (default) \| `on` \| `off`: the unpacked small-contraction path in `direct.rs`. `auto` takes it when `macs <= _DIRECT_MACS` (2048) or `min(m,n) <= _DIRECT_MINDIM` (4) with `k <= _DIRECT_K` (32); fitted on one machine (M5), so per-microarchitecture. `on` forces it wherever the gathered block fits, which is how CI runs the whole suite through it. **Not bitwise identical** to the packed path (FMA only where baseline, 4m complex summation), but independent of `THREADS` |
 | `TENSORCONTRACT_SCRATCH` | `reuse` (default) \| `fresh`: serial-path pack panels and tile come from a per-thread buffer (capped at 1 MiB) instead of three allocations per run. Bitwise identical |
 | `TENSORCONTRACT_BSCACHE` | `on` (default) \| `off`: cache the block-scatter tables in the plan under the first `(MR, NR, orientation)` it runs with. Bitwise identical |
+| `TENSORCONTRACT_PLANCACHE` | `on` (default) \| `off`: `contract()` keeps the last 16 plans per thread, keyed by everything `Plan::new` reads, so a repeated shape skips planning. Bitwise identical |
 
 `Plan::with_complex_method`, `Plan::with_threads` and `Plan::with_blocking` are
 the programmatic equivalents and take precedence.

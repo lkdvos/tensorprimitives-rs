@@ -335,6 +335,8 @@ mod direct;
 mod driver;
 mod pack;
 #[cfg(feature = "std")]
+mod plan_cache;
+#[cfg(feature = "std")]
 mod pool;
 mod writeback;
 
@@ -506,15 +508,25 @@ where
     T: Element,
     T::Real: KernelSet,
 {
+    let dop = Operand {
+        layout: d.layout,
+        idx: d.idx,
+        op: d.op,
+    };
+    // Repeated shapes reuse their plan; see `plan_cache`.
+    #[cfg(feature = "std")]
+    let plan = plan_cache::plan_for(
+        a.operand(),
+        b.operand(),
+        c.as_ref().map(|c| c.operand()),
+        dop,
+    )?;
+    #[cfg(not(feature = "std"))]
     let plan = Plan::new(
         a.operand(),
         b.operand(),
         c.as_ref().map(|c| c.operand()),
-        Operand {
-            layout: d.layout,
-            idx: d.idx,
-            op: d.op,
-        },
+        dop,
     )?;
     plan.run(alpha, a, b, beta, c, d)
 }
