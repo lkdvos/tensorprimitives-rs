@@ -108,7 +108,14 @@ oracle, the rule ~2% / ~1%).
 machine class (x86, where the direct path does not fuse unless built with
 `+fma`) has not been measured, so the rule's defaults are M5 numbers.
 
-### A negative result
+### Three negative results
+
+Padding-aware row-block choice and an explicit lane-chunked packer both measured
+as no win (`refuted.md`, part 23). The packer finding moves the target: the
+existing packer already vectorises unit-stride blocks, and packing is ~5% of a
+small-`k` run, so the remaining overhead there is write-back.
+
+The third:
 
 Hoisting the `TileFormat` dispatch out of the write-back's inner loop, on the
 theory that a run-time `match` per element blocked vectorisation of the plane

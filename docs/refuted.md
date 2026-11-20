@@ -1148,3 +1148,29 @@ repeats): LLVM had already unswitched the `match`.
 **What would reopen it.** Nothing about this change. The write-back cost itself
 is real; the candidate is a fused store from registers into `D` (no tile buffer),
 which needs per-ISA kernel variants.
+
+## An explicit lane-chunked packer (part 23)
+
+**Tried.** QuasiStrided.jl reports ~2x packing throughput from an explicit
+contiguous-SIMD packer. A portable lane-chunked `pack_panel` with the pack format
+and conjugation as const generics, N-lane chunks for unit-stride blocks and 2x2 /
+4x4 register transposes for strided blocks with consecutive `k`; bitwise
+identical to the existing packer over 1600 randomised cases.
+
+**Expected / what happened.** Expected a visible share of the pack + write-back
+time at small `k`. The existing packer **already vectorises unit-stride blocks**
+(`c64` Planar de-interleaves with `ld2.2d`; `f64` from `vr >= 8`); only strided
+blocks (`B` of a column-major GEMM) are scalar. End to end (`Plan::run`,
+`DIRECT=off`, `m = n` 64..512, `k` 8..256): `c64` 1.00–1.02x, `f64` 0.87–1.05x
+with no consistent sign. Pack-only, L1-resident: at best ~13% on a `B`-like
+block. The scalar path already runs near the two-stores-per-cycle limit, and the
+vector path issues the same stores. Packing is ~5% of a `c64` 64x64x8 run; most
+of the small-`k` overhead is write-back.
+
+**Confidence.** `measured once`, Apple M5, noisy session.
+
+**Evidence.** `scratch/packbench/` outside the repo, including
+`simd-pack-experiment.patch` (applies to `pack.rs` at `e948cb7`). Not committed.
+
+**What would reopen it.** A format that writes fewer bytes, or a machine where
+the scalar packer is far from its store limit (x86 strided `B` is unmeasured).
