@@ -650,27 +650,19 @@ impl Plan {
 
     /// Every offset the plan can generate must land inside the slice.
     fn check_bounds(&self, na: usize, nb: usize, nc: Option<usize>, nd: usize) -> Result<()> {
-        fn extremes(parts: [&[i64]; 3]) -> (i64, i64) {
-            let mut lo = 0i64;
-            let mut hi = 0i64;
-            for p in parts {
-                lo += p.iter().copied().min().unwrap_or(0);
-                hi += p.iter().copied().max().unwrap_or(0);
-            }
-            (lo, hi)
-        }
-        let check = |parts: [&[i64]; 3], have: usize, tensor: &'static str| -> Result<()> {
-            let (lo, hi) = extremes(parts);
+        // The extremes were computed once in `Plan::new`; this is O(1).
+        let check = |(lo, hi): (i64, i64), have: usize, tensor: &'static str| -> Result<()> {
             if lo < 0 || hi < 0 || (hi as usize) >= have.max(1) || have == 0 {
                 return Err(Error::NullPointer { tensor });
             }
             Ok(())
         };
-        check([&self.a_m, &self.a_k, &self.h_a], na, "A")?;
-        check([&self.b_k, &self.b_n, &self.h_b], nb, "B")?;
-        check([&self.d_m, &self.d_n, &self.h_d], nd, "D")?;
+        let [ea, eb, ed, ec] = self.extents;
+        check(ea, na, "A")?;
+        check(eb, nb, "B")?;
+        check(ed, nd, "D")?;
         if let Some(nc) = nc {
-            check([&self.c_m, &self.c_n, &self.h_c], nc, "C")?;
+            check(ec, nc, "C")?;
         }
         Ok(())
     }

@@ -46,3 +46,77 @@ impl<T> Drop for Panel<T> {
 
 // SAFETY: `Panel` owns its allocation exclusively and `T` is a plain scalar.
 unsafe impl<T: Send> Send for Panel<T> {}
+
+/// A growable 64-byte-aligned byte buffer, kept per thread and reused across
+/// serial contractions so that a tiny run does not pay three `malloc`/`free`
+/// pairs. Grows monotonically; contents are never assumed (every consumer
+/// writes before it reads, exactly as with [`Panel`]).
+pub(crate) struct Scratch {
+    ptr: *mut u8,
+    cap: usize,
+}
+
+impl Scratch {
+    pub const fn empty() -> Self {
+        Scratch {
+            ptr: core::ptr::null_mut(),
+            cap: 0,
+        }
+    }
+
+    /// Carve three disjoint, 64-byte-aligned regions of `len0`, `len1` and
+    /// `len2` elements of `T`, growing the buffer first if needed.
+    pub fn carve3<T>(&mut self, len0: usize, len1: usize, len2: usize) -> [*mut T; 3] {
+        let sz = core::mem::size_of::<T>();
+        let bytes = |n: usize| (n.max(1) * sz).next_multiple_of(PANEL_ALIGN);
+        let (b0, b1, b2) = (bytes(len0), bytes(len1), bytes(len2));
+        self.reserve(b0 + b1 + b2);
+        // SAFETY: the three regions lie inside the `cap >= b0 + b1 + b2` bytes.
+        unsafe {
+            [
+                self.ptr as *mut T,
+                self.ptr.add(b0) as *mut T,
+                self.ptr.add(b0 + b1) as *mut T,
+            ]
+        }
+    }
+
+    fn reserve(&mut self, bytes: usize) {
+        if bytes <= self.cap {
+            return;
+        }
+        let layout = Layout::from_size_align(bytes, PANEL_ALIGN).expect("scratch layout");
+        // SAFETY: `bytes` is non-zero (it exceeds `cap >= 0`), layout is valid.
+        let ptr = unsafe { alloc(layout) };
+        assert!(
+            !ptr.is_null(),
+            "failed to allocate {bytes} byte scratch buffer"
+        );
+        self.release();
+        self.ptr = ptr;
+        self.cap = bytes;
+    }
+
+    fn release(&mut self) {
+        if self.cap != 0 {
+            // SAFETY: allocated in `reserve` with exactly this layout.
+            unsafe {
+                dealloc(
+                    self.ptr,
+                    Layout::from_size_align_unchecked(self.cap, PANEL_ALIGN),
+                )
+            }
+            self.cap = 0;
+            self.ptr = core::ptr::null_mut();
+        }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+// SAFETY: owns its allocation exclusively; it is only ever a bag of bytes.
+unsafe impl Send for Scratch {}

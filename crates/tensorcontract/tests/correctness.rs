@@ -1338,3 +1338,74 @@ fn element_op_must_match_the_plan() {
     run(&conjugated, true, &mut d).unwrap();
     assert_eq!(d, a.iter().map(|z| z.conj()).collect::<Vec<_>>());
 }
+
+/// One plan run at several element types, with and without `C`, and repeatedly:
+/// the plan caches its block-scatter metadata under the first `(mr, nr, swap)`
+/// it executes with, so a later run at another element type must rebuild its own
+/// rather than reuse that one, and a reused serial scratch buffer must not leak
+/// state from one run into the next.
+#[test]
+fn one_plan_many_element_types_and_repeats() {
+    use tensorcontract::{TensorView, TensorViewMut};
+    fn go<T>(plan: &Plan, dims: (usize, usize, usize), seed: u64, with_c: bool)
+    where
+        T: Element,
+        T::Real: KernelSet,
+    {
+        let (m, k, n) = dims;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let a = fill::<T>(m * k, &mut rng);
+        let b = fill::<T>(k * n, &mut rng);
+        let c0 = fill::<T>(m * n, &mut rng);
+        let (la, lb, ld) = (
+            Layout::col_major(&[m as i64, k as i64]),
+            Layout::col_major(&[k as i64, n as i64]),
+            Layout::col_major(&[m as i64, n as i64]),
+        );
+        let (ia, ib, id) = tensorcontract::parse_einsum("ik,kj->ij").unwrap();
+        let alpha = sample::<T>(&mut rng);
+        let beta = sample::<T>(&mut rng);
+        let mut want = naive_gemm::<T>(m, n, k, &a, &b);
+        for (w, c) in want.iter_mut().zip(&c0) {
+            let bc = if with_c { beta.mul(*c) } else { T::zero() };
+            *w = alpha.mul(*w).add(bc);
+        }
+        for _ in 0..3 {
+            let mut d = c0.clone();
+            let cview = with_c.then(|| TensorView::new(&c0, &ld, &id));
+            plan.run(
+                alpha,
+                TensorView::new(&a, &la, &ia),
+                TensorView::new(&b, &lb, &ib),
+                beta,
+                cview,
+                TensorViewMut::new(&mut d, &ld, &id),
+            )
+            .unwrap();
+            assert!(rel_error(&d, &want) < 1e-4, "m={m} k={k} n={n} c={with_c}");
+        }
+    }
+    let (m, k, n) = (37usize, 5usize, 29usize);
+    let (la, lb, ld) = (
+        Layout::col_major(&[m as i64, k as i64]),
+        Layout::col_major(&[k as i64, n as i64]),
+        Layout::col_major(&[m as i64, n as i64]),
+    );
+    let (ia, ib, id) = tensorcontract::parse_einsum("ik,kj->ij").unwrap();
+    let plan = Plan::new(
+        Operand::new(&la, &ia),
+        Operand::new(&lb, &ib),
+        Some(Operand::new(&ld, &id)),
+        Operand::new(&ld, &id),
+    )
+    .unwrap();
+    for with_c in [false, true] {
+        go::<f64>(&plan, (m, k, n), 1, with_c);
+        go::<f32>(&plan, (m, k, n), 2, with_c);
+        go::<Complex<f64>>(&plan, (m, k, n), 3, with_c);
+        go::<Complex<f32>>(&plan, (m, k, n), 4, with_c);
+        go::<f64>(&plan, (m, k, n), 5, with_c);
+    }
+    // A clone carries the cache; it must stay valid.
+    go::<Complex<f64>>(&plan.clone(), (m, k, n), 6, true);
+}
