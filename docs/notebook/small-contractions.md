@@ -41,7 +41,7 @@ be confined by rule to the regime where packing cannot amortise.
 | block-scatter tables cached in the plan (first `(MR, NR, orientation)` key) | — | yes |
 | serial-path panels and tile from a per-thread scratch (`set_scratch_limit`, default 1 MiB; threaded path untouched, A55) | — | yes |
 | `build_scatter` inner axis as a contiguous loop; run structure from folded axes; fewer allocations in `Plan::new` | — | yes |
-| direct (unpacked) path, `direct.rs` | `TENSORCONTRACT_DIRECT=on\|off` (test override) | **no** |
+| direct (unpacked) path, `direct.rs` | — | **no** |
 | per-thread plan cache in `contract()` (`set_plan_cache_capacity`, default 16) | — | yes |
 
 `config_for_plan` was measured at 13–14 ns per call and left uncached.
@@ -127,6 +127,10 @@ already unswitched it. Not committed; recorded in `refuted.md`.
 On review the bitwise-identical changes (scratch reuse, block-scatter cache,
 plan cache) ship without switches, and the two caches are sized in code
 (`set_scratch_limit`, `set_plan_cache_capacity`). The direct path's thresholds
-are constants. `TENSORCONTRACT_DIRECT=on|off` stays as a test override: most of
-the suite's shapes are small enough to take the direct path, and the `off` arm
-is what keeps the packed driver covered on them.
+are constants, and the direct path has no switch either. An explicit
+`Plan::with_blocking` takes the packed path, so the randomised sweeps (which run
+every problem with a tiny explicit blocking and with none) still cover the packed
+driver on small shapes. `threaded_clamps_below_one_cell_per_thread` uses a deeper
+`k` so its small-`m` cases still reach the threaded driver, and
+`direct_path_matches_the_oracle` covers the direct path's branches; a mutation in
+each of its contiguous load, contiguous store and conjugation paths fails it.

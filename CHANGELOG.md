@@ -32,8 +32,8 @@ the part a prospective dependant most needs, and it has no KaC category.
   amortise packing: the smaller-extent operand is gathered onto the stack, the
   other streamed in 8-wide register-accumulated chunks, with no heap allocation,
   kernel dispatch or write-back pass. Taken when `macs <= 4096` or
-  `min(m,n) <= 4` with `k <= 32` (D64); `TENSORCONTRACT_DIRECT=on|off`
-  overrides it for testing.
+  `min(m,n) <= 4` with `k <= 32`, unless the plan has an explicit
+  `with_blocking` (D64).
   Not bitwise identical to the packed path; independent of the thread count.
 * **`contract()` caches plans**, 16 per thread, keyed by everything `Plan::new`
   reads; sized with `set_plan_cache_capacity` (D67).
@@ -54,7 +54,7 @@ the part a prospective dependant most needs, and it has no KaC category.
 
 | Component | Status |
 |---|---|
-| Direct path and per-call changes | **Correctness tested** — the whole suite runs through both `DIRECT` arms in CI. **Performance measured on one machine** (Apple M5, unpinned, part 23): an MPS gate's reused-plan run is 6.1x faster at 64 bytes and 2.0x at 262 KB, `contract()` ~15x and 3x, and ahead of a hand-written loop from 1 KB up. The `auto` rule's thresholds are fitted there and are a per-microarchitecture claim (A56); x86, where the direct path fuses only with `+fma`, is unmeasured |
+| Direct path and per-call changes | **Correctness tested** — the randomised sweeps run every problem both with an explicit blocking (packed) and without (direct where the rule applies), and a dedicated test covers the direct path's branches. **Performance measured on one machine** (Apple M5, unpinned, part 23): an MPS gate's reused-plan run is 6.1x faster at 64 bytes and 2.0x at 262 KB, `contract()` ~15x and 3x, and ahead of a hand-written loop from 1 KB up. The `auto` rule's thresholds are fitted there and are a per-microarchitecture claim (A56); x86, where the direct path fuses only with `+fma`, is unmeasured |
 
 Note for whoever opens this section: the release procedure changed
 after 0.1.0 shipped — `RELEASING.md` step 2 is now a single

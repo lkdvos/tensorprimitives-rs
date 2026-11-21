@@ -97,8 +97,9 @@ question is closed.
   at 64 threads is not readable at all (A39).
 * **Measure every new fast path with a runtime switch**, so both arms interleave
   in one process-restart A/B; a build-to-build diff has already produced a wrong
-  sign here (A15). Once it is measured to win, ship it on and drop the switch,
-  unless the suite needs it to cover both paths.
+  sign here (A15). Once it is measured to win, ship it on and drop the switch.
+  No feature exists only for testing; cover both paths with shapes and
+  `Plan::with_blocking` (which always takes the packed path) instead.
 * **Comments: concise, and only where the code cannot say it.** Explain *why*
   (an invariant, a non-obvious constraint, a measured reason), never restate
   what the code does. Do not describe previous versions of the code or how it
@@ -339,9 +340,11 @@ nothing in the suite pins it.
   writes `acc += a * b` — two roundings, which LLVM may not contract under IEEE
   rules — while every vector kernel body uses a true FMA, which is one. And
   `TENSORCONTRACT_COMPLEX=3m`, which computes three products where planar
-  computes four; `tests/conformance.rs` already says so in as many words. And
-  `TENSORCONTRACT_DIRECT`, whose unpacked path fuses only where FMA is baseline
-  and sums complex products as four real planes.
+  computes four; `tests/conformance.rs` already says so in as many words.
+  Separately, the unpacked small-contraction path (`direct.rs`) rounds
+  differently from the packed one; which path runs is a fixed function of the
+  shape (and of whether `Plan::with_blocking` was used), never of the thread
+  count.
 
 The consequence for an A/B is small but real: comparing two *kernels* or two
 *complex methods* is comparing two implementations of the same contraction to
@@ -363,7 +366,6 @@ statement, not a performance one — the timing methodology is unaffected.
 | `TENSORCONTRACT_ORIENT` | `none` \| `swap`: pin the row/column orientation; `legacy`: the Phase 4.1 rule |
 | `TENSORCONTRACT_WRITEBACK` | `gather` forces the general scatter write-back |
 | `TENSORCONTRACT_ROWBLOCK` | `base` \| `auto` \| `mr=<n>` \| `idx=<i>`: pin the micro-tile row block. **Use `idx=`** — the menu is keyed by *position* (D43), so two entries may share an `MR` and differ only in `NR`, and `mr=<n>` resolves to the first entry of that height. `idx=3` reaches the `32x5` shape A35 is about |
-| `TENSORCONTRACT_DIRECT` | `on` \| `off`: force or forbid the unpacked small-contraction path (`direct.rs`); unset, a fixed rule decides. A test override, so CI runs the suite through each path. **Not bitwise identical** to the packed path, but independent of `THREADS` |
 
 `Plan::with_complex_method`, `Plan::with_threads` and `Plan::with_blocking` are
 the programmatic equivalents and take precedence.

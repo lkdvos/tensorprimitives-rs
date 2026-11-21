@@ -54,39 +54,17 @@ fn init_prefix<R: Copy>(buf: &mut [MaybeUninit<R>], len: usize, z: R) -> &mut [R
     unsafe { &mut *(pre as *mut [MaybeUninit<R>] as *mut [R]) }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Mode {
-    Auto,
-    Off,
-    On,
-}
-
-/// `TENSORCONTRACT_DIRECT=on|off` overrides the rule. It exists so the test
-/// suite can run through each path: `on` takes this path wherever the gathered
-/// block fits, `off` sends tiny shapes through the packed driver.
-fn mode() -> Mode {
-    env_once!(Mode, "TENSORCONTRACT_DIRECT", Mode::Auto, |v: &str| match v
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "off" | "0" | "false" => Mode::Off,
-        "on" | "1" | "true" => Mode::On,
-        _ => Mode::Auto,
-    })
-}
-
+/// An explicit [`Plan::with_blocking`] keeps the packed path: blocking only
+/// means something to its loop nest.
 pub(crate) fn use_direct(plan: &Plan) -> bool {
     let s = &plan.stats;
-    if s.k == 0 || s.m == 0 || s.n == 0 || s.batch == 0 {
+    if plan.blocking.is_some() || s.k == 0 || s.m == 0 || s.n == 0 || s.batch == 0 {
         return false;
     }
     let min_dim = s.m.min(s.n);
-    let fits = s.k <= K_LINE && min_dim * s.k <= GATHER_CAP;
-    match mode() {
-        Mode::Off => false,
-        Mode::On => fits,
-        Mode::Auto => fits && (s.macs() <= MAX_MACS || (min_dim <= MAX_MIN_DIM && s.k <= MAX_K)),
-    }
+    s.k <= K_LINE
+        && min_dim * s.k <= GATHER_CAP
+        && (s.macs() <= MAX_MACS || (min_dim <= MAX_MIN_DIM && s.k <= MAX_K))
 }
 
 /// Vectorises along the larger free extent so lanes stay full when the other

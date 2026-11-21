@@ -219,10 +219,25 @@ where
     T: Element,
     T::Real: KernelSet,
 {
+    check_problem_alpha::<T>(p, rng, blocking, method, None)
+}
+
+/// [`check_problem`] with `alpha` fixed rather than sampled.
+fn check_problem_alpha<T>(
+    p: &Problem,
+    rng: &mut ChaCha8Rng,
+    blocking: Option<Blocking>,
+    method: ComplexMethod,
+    alpha: Option<T>,
+) -> f64
+where
+    T: Element,
+    T::Real: KernelSet,
+{
     let a: Vec<T> = fill(p.la.storage_len() as usize, rng);
     let b: Vec<T> = fill(p.lb.storage_len() as usize, rng);
     let c: Vec<T> = fill(p.lc.storage_len() as usize, rng);
-    let alpha = sample::<T>(rng);
+    let alpha = alpha.unwrap_or_else(|| sample::<T>(rng));
     let beta = if p.use_c { sample::<T>(rng) } else { T::zero() };
 
     let mut got: Vec<T> = fill(p.ld.storage_len() as usize, rng);
@@ -1160,13 +1175,15 @@ fn threaded_matches_serial_batched() {
 /// both directions for *every* shape in either kernel path (the smallest are
 /// `MR = 2`, `NR = 4`, from the portable complex kernels), so it must come out
 /// fully serial however many threads are asked for.
+/// `k` is deep enough that every case takes the packed (threaded) driver rather
+/// than the direct path.
 #[test]
 fn threaded_clamps_below_one_cell_per_thread() {
     for method in ComplexMethod::ALL {
         for m in [1, 2, 7, 25, 49] {
             let (many, one) = (&[2, 8, 64][..], &[8][..]);
             threaded_case::<f64>(
-                (m, 14, 17, 1),
+                (m, 14, 300, 1),
                 None,
                 method,
                 many,
@@ -1174,7 +1191,7 @@ fn threaded_clamps_below_one_cell_per_thread() {
                 31 + m as u64,
             );
             threaded_case::<Complex<f32>>(
-                (m, 12, 9, 2),
+                (m, 12, 200, 2),
                 None,
                 method,
                 one,
@@ -1182,8 +1199,15 @@ fn threaded_clamps_below_one_cell_per_thread() {
                 41 + m as u64,
             );
         }
-        threaded_case::<f64>((2, 2, 37, 1), None, method, &[2, 8, 64], Split::Serial, 61);
-        threaded_case::<Complex<f64>>((2, 2, 5, 3), None, method, &[8], Split::Serial, 62);
+        threaded_case::<f64>(
+            (2, 2, 1100, 1),
+            None,
+            method,
+            &[2, 8, 64],
+            Split::Serial,
+            61,
+        );
+        threaded_case::<Complex<f64>>((2, 2, 400, 3), None, method, &[8], Split::Serial, 62);
     }
 }
 
@@ -1404,4 +1428,84 @@ fn one_plan_many_element_types_and_repeats() {
         go::<f64>(&plan, (m, k, n), 5, with_c);
     }
     go::<Complex<f64>>(&plan.clone(), (m, k, n), 6, true);
+}
+
+/// Shapes the engine sends down the direct (unpacked) path, in both
+/// orientations, with full and partial lane chunks, contiguous and random
+/// layouts, every op combination, with and without `C`, and batched.
+#[test]
+fn direct_path_matches_the_oracle() {
+    fn sweep<T>(seed: u64, complex: bool)
+    where
+        T: Element,
+        T::Real: KernelSet,
+    {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let (m, n, k, h) = (1i64, 2i64, 3i64, 4i64);
+        let shapes = [
+            (3, 40, 5, 1),
+            (40, 3, 7, 1),
+            (4, 64, 16, 2),
+            (64, 4, 4, 1),
+            (2, 17, 32, 1),
+            (1, 9, 1, 3),
+            (5, 9, 8, 1),
+        ];
+        for (sm, sn, sk, sh) in shapes {
+            for trial in 0..8u32 {
+                let batched = sh > 1;
+                let with_h = |v: Vec<i64>| -> Vec<i64> {
+                    if batched {
+                        v.into_iter().chain([h]).collect()
+                    } else {
+                        v
+                    }
+                };
+                let idx_a = with_h(vec![m, k]);
+                let idx_b = with_h(vec![k, n]);
+                let idx_d = with_h(vec![m, n]);
+                let e = |idx: &[i64]| -> Vec<i64> {
+                    idx.iter()
+                        .map(|&l| [sm, sn, sk, sh][(l - 1) as usize])
+                        .collect()
+                };
+                let lay = |idx: &[i64], rng: &mut ChaCha8Rng| {
+                    if trial % 2 == 0 {
+                        Layout::col_major(&e(idx))
+                    } else {
+                        random_layout(&e(idx), rng)
+                    }
+                };
+                let p = Problem {
+                    la: lay(&idx_a, &mut rng),
+                    lb: lay(&idx_b, &mut rng),
+                    lc: lay(&idx_d, &mut rng),
+                    ld: lay(&idx_d, &mut rng),
+                    conj_a: complex && trial & 2 != 0,
+                    conj_b: complex && trial & 4 != 0,
+                    conj_c: complex && trial & 1 != 0,
+                    conj_d: complex && trial == 6,
+                    use_c: trial % 3 != 0,
+                    idx_c: idx_d.clone(),
+                    idx_a,
+                    idx_b,
+                    idx_d,
+                };
+                // Odd trials use alpha = 1, which (without C or conj_d) takes
+                // the contiguous-store branch.
+                let alpha = (trial % 2 == 0).then(T::one);
+                let err =
+                    check_problem_alpha::<T>(&p, &mut rng, None, ComplexMethod::Planar, alpha);
+                assert!(
+                    err <= tol::<T>(ComplexMethod::Planar),
+                    "shape {:?} trial {trial}: relative error {err:e}\n{p}",
+                    (sm, sn, sk, sh)
+                );
+            }
+        }
+    }
+    sweep::<f64>(0xD1, false);
+    sweep::<f32>(0xD2, false);
+    sweep::<Complex<f64>>(0xD3, true);
+    sweep::<Complex<f32>>(0xD4, true);
 }
