@@ -114,6 +114,7 @@
 //!   spawn set for the batch rather than one per contraction — it removes the
 //!   count.
 
+use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Barrier;
 
 use crate::buffer::{Panel, Scratch};
@@ -312,9 +313,7 @@ pub(crate) unsafe fn execute_capped<T>(
         return;
     }
 
-    // Too shallow to pay for packing: a plain loop over the scatter vectors.
-    // Decided before the kernel config is even looked up, because at this size
-    // that lookup is itself a visible fraction of the call.
+    // Before the kernel config lookup, which is itself visible at these sizes.
     if crate::direct::use_direct(plan) {
         // SAFETY: forwarded unchanged; `use_direct` established its precondition.
         unsafe { crate::direct::execute(plan, alpha, a, b, beta, c, d) };
@@ -392,10 +391,7 @@ pub(crate) unsafe fn execute_capped<T>(
         return;
     }
 
-    // Block-scatter metadata. Element-type dependent only through MR/NR and
-    // the orientation, so it is cached in the plan under that key (the first
-    // key a plan runs with; any other rebuilds per call). `C`'s row block
-    // scatter is consulted only when beta is nonzero, and is built lazily.
+    // `C`'s row block scatter is only read when beta is nonzero.
     let mut fresh = None;
     let bs = plan.bs_cache.get((mr, nr, swap), am, bn, dm, &mut fresh);
     let a_m_bs: &[i64] = &bs.a_m;
@@ -450,20 +446,13 @@ pub(crate) unsafe fn execute_capped<T>(
     // The stride between slices is the *worst-case* sliver size, `kc` deep and
     // not `pc_len` deep, precisely so that two groups sitting on different `pc`
     // blocks at the same moment still cannot overlap.
-    //
-    // "Worst case" is `min(kc, k)`, not `kc`: no `pc` block is deeper than the
-    // contraction itself, and slivers are packed `pc_len` deep. Sizing by the
-    // blocking `kc` alone allocated 41 KB of panel for a 64-byte `k = 4`
-    // contraction. This changes only the allocation, never the blocking, so it
-    // is not the `min(k, KC)` re-derivation the NOTE above warns about.
+    // No `pc` block is deeper than `k`, so the worst case is `min(kc, k)`.
     let kc_buf = kc.min(k.max(1));
     let ap_len = panel_len(mc, mr, kc_buf, ukr.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
     let b_group = panel_len(group_cap * nr, nr, kc_buf, ukr.b_pack);
     let bp_len = pn * b_group;
 
-    // The serial path can reuse a per-thread scratch buffer for all three
-    // panels. The threaded path always allocates (see `scratch_reuse`).
     let mut scratch = None;
     let mut bp_own = None;
     let mut serial_ptrs = None;
@@ -579,30 +568,28 @@ pub(crate) unsafe fn execute_capped<T>(
 }
 
 thread_local! {
-    /// This thread's reusable serial-path buffer. `take`n for the duration of a
-    /// call and put back after, so a re-entrant call finds it empty and simply
-    /// allocates instead of aliasing it.
+    /// Taken for the duration of a call, so a re-entrant call allocates instead
+    /// of aliasing it.
     static SCRATCH: core::cell::Cell<Option<Scratch>> = const { core::cell::Cell::new(None) };
 }
 
-/// Total panel bytes above which the serial path allocates fresh rather than
-/// keep the memory pinned per thread. Allocation cost is noise against that
-/// much work, and the retained buffer would otherwise sit at its high-water
-/// mark for the life of the thread.
-const SCRATCH_MAX_BYTES: usize = 1 << 20;
+static SCRATCH_LIMIT: AtomicUsize = AtomicUsize::new(1 << 20);
 
-/// `TENSORCONTRACT_SCRATCH=reuse|fresh` (default `reuse`), read once per
-/// process. `fresh` is the old behaviour -- three heap allocations per serial
-/// run -- kept reachable so both arms can be A/B'd in one build (A15). The
-/// threaded path ignores it: reused buffer addresses were measured to hurt the
-/// thread pool on one machine (A55).
-fn scratch_reuse() -> bool {
-    env_once!(bool, "TENSORCONTRACT_SCRATCH", true, |v: &str| v != "fresh")
+/// Set the largest per-thread scratch buffer, in bytes, that serial
+/// contractions keep between calls for their pack panels; larger calls
+/// allocate and free their own. 0 disables reuse. Default 1 MiB.
+pub fn set_scratch_limit(bytes: usize) {
+    SCRATCH_LIMIT.store(bytes, Relaxed);
 }
 
-/// The `[B panel, A panel, tile]` pointers out of this thread's scratch, with
-/// the scratch itself (to be put back by the caller), when this call is serial,
-/// small, and reuse is on.
+/// The current per-thread scratch limit, in bytes.
+pub fn scratch_limit() -> usize {
+    SCRATCH_LIMIT.load(Relaxed)
+}
+
+/// `[B panel, A panel, tile]` from this thread's scratch, and the scratch to
+/// put back afterwards. Serial calls only: reused addresses across threads were
+/// measured to hurt the pool (A55).
 #[allow(clippy::type_complexity)]
 fn serial_scratch<R>(
     p: usize,
@@ -610,11 +597,15 @@ fn serial_scratch<R>(
     ap_len: usize,
     tile_len: usize,
 ) -> Option<(Scratch, [*mut R; 3])> {
+    let limit = scratch_limit();
     let bytes = (bp_len + ap_len + tile_len + 3) * core::mem::size_of::<R>() + 3 * 64;
-    if p != 1 || bytes > SCRATCH_MAX_BYTES || !scratch_reuse() {
+    if p != 1 || bytes > limit {
         return None;
     }
-    let mut s = SCRATCH.with(|c| c.take()).unwrap_or_else(Scratch::empty);
+    let mut s = SCRATCH
+        .with(|c| c.take())
+        .filter(|s| s.capacity() <= limit)
+        .unwrap_or_else(Scratch::empty);
     let ptrs = s.carve3::<R>(bp_len, ap_len, tile_len);
     Some((s, ptrs))
 }

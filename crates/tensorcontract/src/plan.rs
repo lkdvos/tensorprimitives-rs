@@ -294,13 +294,8 @@ pub struct Plan {
     pub(crate) conj_b: bool,
     pub(crate) conj_c: bool,
     pub(crate) conj_d: bool,
-    /// Per-operand `(lo, hi)` extremes of `row + col + hadamard` offsets, for
-    /// `A`, `B`, `D` and `C` in that order. Fixed at construction so that the
-    /// bounds check in [`Plan::run`] is O(1) rather than a scan of all twelve
-    /// scatter vectors per call.
+    /// `(lo, hi)` offset extremes of `A`, `B`, `D`, `C`, for the bounds check.
     pub(crate) extents: [(i64, i64); 4],
-    /// Block-scatter metadata for the first `(mr, nr, orientation)` this plan
-    /// executed with; see [`crate::scatter::BlockScatterCache`].
     pub(crate) bs_cache: crate::scatter::BlockScatterCache,
     /// Overrides the element-type-derived cache blocking when set.
     pub(crate) blocking: Option<crate::kernel::Blocking>,
@@ -314,8 +309,7 @@ pub struct Plan {
     pub stats: PlanStats,
 }
 
-/// Smallest and largest offset reachable from three independent scatter
-/// vectors: the sum of each vector's own minimum and maximum (0 when empty).
+/// Smallest and largest offset reachable from three independent scatters.
 fn extremes(parts: [&[i64]; 3]) -> (i64, i64) {
     let mut lo = 0i64;
     let mut hi = 0i64;
@@ -1297,7 +1291,6 @@ fn merge_into(
 
 /// Merge adjacent axes whose strides are compatible in every operand.
 fn fold_axes(mut axes: Vec<Axis>) -> Vec<Axis> {
-    // In place: `w` is the number of folded axes kept so far.
     let mut w = 0;
     for r in 0..axes.len() {
         let ax = axes[r];
@@ -1351,14 +1344,13 @@ fn build_scatter_for(axes: &[Axis], pick: impl Fn(&Axis) -> i64) -> Vec<i64> {
     build_scatter(&extents, &strides)
 }
 
-/// `run_structure(scat).unwrap_or((scat.len(), 0))` for the D scatter of the
-/// folded `axes`, computed from the axes where that is provably identical.
+/// `run_structure(scat).unwrap_or((scat.len(), 0))`, from the folded `axes`
+/// where that is provably the same answer.
 ///
-/// Within the first axis consecutive entries differ by its stride `s0`. At a
-/// carry into axis `d` they differ by `s_d - sum_{j<d} (e_j - 1) s_j`. If none
-/// of those equals `s0`, the maximal runs are exactly the first axis, `(e0,
-/// s0)`. A boundary that does equal `s0` makes the structure depend on which
-/// carries it is, so that rare case scans the vector.
+/// Within the first axis, consecutive offsets differ by its stride `s0`; at a
+/// carry into axis `d` they differ by `s_d - sum_{j<d} (e_j - 1) s_j`. If no
+/// carry difference equals `s0`, the runs are exactly the first axis. Otherwise
+/// the vector is scanned.
 fn run_of_axes(axes: &[Axis], scat: &[i64]) -> (usize, i64) {
     let fast = match axes {
         [] => None,
@@ -1378,13 +1370,13 @@ fn run_of_axes(axes: &[Axis], scat: &[i64]) -> (usize, i64) {
         }
         _ => None,
     };
-    let scanned = run_structure(scat).unwrap_or((scat.len(), 0));
+    let scan = || run_structure(scat).unwrap_or((scat.len(), 0));
     match fast {
         Some(f) => {
-            debug_assert_eq!(f, scanned);
+            debug_assert_eq!(f, scan());
             f
         }
-        None => scanned,
+        None => scan(),
     }
 }
 

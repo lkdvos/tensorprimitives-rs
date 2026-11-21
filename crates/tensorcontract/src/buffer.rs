@@ -47,10 +47,8 @@ impl<T> Drop for Panel<T> {
 // SAFETY: `Panel` owns its allocation exclusively and `T` is a plain scalar.
 unsafe impl<T: Send> Send for Panel<T> {}
 
-/// A growable 64-byte-aligned byte buffer, kept per thread and reused across
-/// serial contractions so that a tiny run does not pay three `malloc`/`free`
-/// pairs. Grows monotonically; contents are never assumed (every consumer
-/// writes before it reads, exactly as with [`Panel`]).
+/// A growable 64-byte-aligned buffer, reused across serial contractions on one
+/// thread. Contents are never read before being written.
 pub(crate) struct Scratch {
     ptr: *mut u8,
     cap: usize,
@@ -64,8 +62,8 @@ impl Scratch {
         }
     }
 
-    /// Carve three disjoint, 64-byte-aligned regions of `len0`, `len1` and
-    /// `len2` elements of `T`, growing the buffer first if needed.
+    /// Three disjoint 64-byte-aligned regions of `len0`, `len1` and `len2`
+    /// elements of `T`.
     pub fn carve3<T>(&mut self, len0: usize, len1: usize, len2: usize) -> [*mut T; 3] {
         let sz = core::mem::size_of::<T>();
         let bytes = |n: usize| (n.max(1) * sz).next_multiple_of(PANEL_ALIGN);
@@ -79,6 +77,10 @@ impl Scratch {
                 self.ptr.add(b0 + b1) as *mut T,
             ]
         }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.cap
     }
 
     fn reserve(&mut self, bytes: usize) {
@@ -118,5 +120,5 @@ impl Drop for Scratch {
     }
 }
 
-// SAFETY: owns its allocation exclusively; it is only ever a bag of bytes.
+// SAFETY: owns its allocation exclusively.
 unsafe impl Send for Scratch {}

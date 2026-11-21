@@ -38,11 +38,11 @@ be confined by rule to the regime where packing cannot amortise.
 | `KC_COUPLE` read once (`env_once!`) | — | yes |
 | pack panels sized by `min(kc, k)` (allocation only; the blocking is untouched, so this is not the refuted `min(k, KC)` re-derivation) | — | yes |
 | `check_bounds` O(1) from extremes cached in the plan | — | yes |
-| block-scatter tables cached in the plan (first `(MR, NR, orientation)` key) | `TENSORCONTRACT_BSCACHE` | yes |
-| serial-path panels and tile from a per-thread scratch (≤ 1 MiB; threaded path untouched, A55) | `TENSORCONTRACT_SCRATCH` | yes |
+| block-scatter tables cached in the plan (first `(MR, NR, orientation)` key) | — | yes |
+| serial-path panels and tile from a per-thread scratch (`set_scratch_limit`, default 1 MiB; threaded path untouched, A55) | — | yes |
 | `build_scatter` inner axis as a contiguous loop; run structure from folded axes; fewer allocations in `Plan::new` | — | yes |
-| direct (unpacked) path, `direct.rs` | `TENSORCONTRACT_DIRECT` (+ `_MACS`, `_MINDIM`, `_K`) | **no** |
-| per-thread plan cache in `contract()` | `TENSORCONTRACT_PLANCACHE` | yes |
+| direct (unpacked) path, `direct.rs` | `TENSORCONTRACT_DIRECT=on\|off` (test override) | **no** |
+| per-thread plan cache in `contract()` (`set_plan_cache_capacity`, default 16) | — | yes |
 
 `config_for_plan` was measured at 13–14 ns per call and left uncached.
 
@@ -121,3 +121,12 @@ Hoisting the `TileFormat` dispatch out of the write-back's inner loop, on the
 theory that a run-time `match` per element blocked vectorisation of the plane
 recombination, measured within 1% (`c64`, `m` 16..256, `k` 16..256). LLVM had
 already unswitched it. Not committed; recorded in `refuted.md`.
+
+### Switches retired
+
+On review the bitwise-identical changes (scratch reuse, block-scatter cache,
+plan cache) ship without switches, and the two caches are sized in code
+(`set_scratch_limit`, `set_plan_cache_capacity`). The direct path's thresholds
+are constants. `TENSORCONTRACT_DIRECT=on|off` stays as a test override: most of
+the suite's shapes are small enough to take the direct path, and the `off` arm
+is what keeps the packed driver covered on them.

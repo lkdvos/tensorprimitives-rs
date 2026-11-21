@@ -82,8 +82,7 @@ pub fn build_scatter(extents: &[i64], strides: &[i64]) -> Vec<i64> {
         return out;
     }
 
-    // The innermost axis is a tight contiguous loop; the odometer only runs
-    // over the outer axes, once per inner run.
+    // Contiguous loop over the innermost axis; odometer over the rest.
     let n0 = extents[0] as usize;
     let s0 = strides[0];
     let outer = extents.len() - 1;
@@ -156,11 +155,8 @@ pub fn build_block_scatter(scat: &[i64], blk: usize) -> Vec<i64> {
     out
 }
 
-/// The block-scatter vectors one execution needs, built for a fixed register
-/// block and orientation.
-///
-/// `c_m` is built on first use only: it is consulted just when `beta` is
-/// nonzero, and the common `beta == 0` call never pays for it.
+/// The block-scatter vectors for one register block and orientation. `c_m` is
+/// built on first use, since it is only read when `beta` is nonzero.
 #[derive(Clone, Debug)]
 pub(crate) struct BlockScatterSet {
     pub a_m: Vec<i64>,
@@ -170,8 +166,8 @@ pub(crate) struct BlockScatterSet {
 }
 
 impl BlockScatterSet {
-    /// `am`, `bn`, `dm` are the oriented row scatters of the row operand, the
-    /// column operand and the output.
+    /// `am`, `bn`, `dm`: oriented scatters of the row operand, column operand
+    /// and output.
     pub fn build(am: &[i64], bn: &[i64], dm: &[i64], mr: usize, nr: usize) -> Self {
         BlockScatterSet {
             a_m: build_block_scatter(am, mr),
@@ -181,31 +177,19 @@ impl BlockScatterSet {
         }
     }
 
-    /// `C`'s row block scatter, built on the first call.
     pub fn c_m(&self, cm: &[i64], mr: usize) -> &[i64] {
         self.c_m.get_or_init(|| build_block_scatter(cm, mr))
     }
 }
 
-/// A plan's cache of its [`BlockScatterSet`].
-///
-/// The set is a pure function of the plan's scatters and of `(mr, nr, swap)`,
-/// and the plan's scatters never change after construction, so it can live in
-/// the plan. It holds the **first** key a plan executes with and nothing else:
-/// a plan is almost always run at one element type, and a second key (an `f32`
-/// run of a plan first run as `c64`, say) just builds its own set per call, as
-/// every run did before. That keeps the cache a single `OnceLock` -- no lock,
-/// no map, `Send + Sync` for free -- at the price of the unusual case staying
-/// at the old speed.
-///
-/// `TENSORCONTRACT_BSCACHE=off` bypasses it, for A/B against the rebuilt-per-run
-/// behaviour.
+/// A plan's [`BlockScatterSet`] for the first `(mr, nr, swap)` it runs with.
+/// Other keys (the same plan at another element type) build theirs per call;
+/// one slot keeps this a lock-free `OnceLock`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BlockScatterCache(std::sync::OnceLock<((usize, usize, bool), BlockScatterSet)>);
 
 impl BlockScatterCache {
-    /// The set for `(mr, nr, swap)`: the cached one when the key matches,
-    /// otherwise `fresh` holds a newly built one.
+    /// The cached set if `key` matches, otherwise a new one stored in `fresh`.
     pub fn get<'a>(
         &'a self,
         key: (usize, usize, bool),
@@ -214,24 +198,14 @@ impl BlockScatterCache {
         dm: &[i64],
         fresh: &'a mut Option<BlockScatterSet>,
     ) -> &'a BlockScatterSet {
-        if cache_enabled() {
-            let (k, set) = self
-                .0
-                .get_or_init(|| (key, BlockScatterSet::build(am, bn, dm, key.0, key.1)));
-            if *k == key {
-                return set;
-            }
+        let (k, set) = self
+            .0
+            .get_or_init(|| (key, BlockScatterSet::build(am, bn, dm, key.0, key.1)));
+        if *k == key {
+            return set;
         }
         fresh.insert(BlockScatterSet::build(am, bn, dm, key.0, key.1))
     }
-}
-
-/// `TENSORCONTRACT_BSCACHE=off|on` (default on), read once per process.
-fn cache_enabled() -> bool {
-    env_once!(bool, "TENSORCONTRACT_BSCACHE", true, |v: &str| !matches!(
-        v,
-        "off" | "0" | "fresh"
-    ))
 }
 
 /// Common difference of a run, or [`IRREGULAR`].
@@ -347,7 +321,7 @@ pub fn regular_fraction(bs: &[i64]) -> f64 {
 mod tests {
     use super::*;
 
-    /// The original element-at-a-time odometer, kept as an oracle.
+    /// Element-at-a-time odometer, as a test oracle.
     fn build_scatter_oracle(extents: &[i64], strides: &[i64]) -> Vec<i64> {
         let total: i64 = extents.iter().product();
         let total = total.max(0) as usize;

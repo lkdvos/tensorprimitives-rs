@@ -95,9 +95,14 @@ question is closed.
 * **Every noise floor names its session and its thread count.** There is no
   project-wide floor; see `docs/measurement-rules.md`. A per-case ratio
   at 64 threads is not readable at all (A39).
-* **Every new fast path gets a runtime switch**, so both arms interleave in one
-  process-restart A/B. A build-to-build diff has already produced a wrong sign
-  here (A15).
+* **Measure every new fast path with a runtime switch**, so both arms interleave
+  in one process-restart A/B; a build-to-build diff has already produced a wrong
+  sign here (A15). Once it is measured to win, ship it on and drop the switch,
+  unless the suite needs it to cover both paths.
+* **Comments: concise, and only where the code cannot say it.** Explain *why*
+  (an invariant, a non-obvious constraint, a measured reason), never restate
+  what the code does. Do not describe previous versions of the code or how it
+  got here; that history belongs in `docs/` and git.
 * **Do not re-derive the register blocks.** They are measured and recorded in
   `kernel::x86` and `kernel::aarch64`; `examples/kernel_shapes` re-derives them if
   the machine changes — in **two or three arms**, scored with
@@ -326,7 +331,7 @@ two that change the arithmetic.** The blanket claim that used to stand here —
 nothing in the suite pins it.
 
 * **Bitwise identical:** `THREADS`, `PARTITION`, `POOL`, `L3_DOMAINS`,
-  `WRITEBACK`, `ORIENT`, `ROWBLOCK`, `SCRATCH`, `BSCACHE`, `PLANCACHE` and the blocking overrides. These change how
+  `WRITEBACK`, `ORIENT`, `ROWBLOCK` and the blocking overrides. These change how
   the work is split and in what order panels are packed, never what arithmetic is
   performed on which values: every output element has one owning thread
   accumulating over the full contracted extent in the original order.
@@ -358,13 +363,15 @@ statement, not a performance one — the timing methodology is unaffected.
 | `TENSORCONTRACT_ORIENT` | `none` \| `swap`: pin the row/column orientation; `legacy`: the Phase 4.1 rule |
 | `TENSORCONTRACT_WRITEBACK` | `gather` forces the general scatter write-back |
 | `TENSORCONTRACT_ROWBLOCK` | `base` \| `auto` \| `mr=<n>` \| `idx=<i>`: pin the micro-tile row block. **Use `idx=`** — the menu is keyed by *position* (D43), so two entries may share an `MR` and differ only in `NR`, and `mr=<n>` resolves to the first entry of that height. `idx=3` reaches the `32x5` shape A35 is about |
-| `TENSORCONTRACT_DIRECT` | `auto` (default) \| `on` \| `off`: the unpacked small-contraction path in `direct.rs`. `auto` takes it when `macs <= _DIRECT_MACS` (4096) or `min(m,n) <= _DIRECT_MINDIM` (4) with `k <= _DIRECT_K` (32); fitted on one machine (M5), so per-microarchitecture. `on` forces it wherever the gathered block fits, which is how CI runs the whole suite through it. **Not bitwise identical** to the packed path (FMA only where baseline, 4m complex summation), but independent of `THREADS` |
-| `TENSORCONTRACT_SCRATCH` | `reuse` (default) \| `fresh`: serial-path pack panels and tile come from a per-thread buffer (capped at 1 MiB) instead of three allocations per run. Bitwise identical |
-| `TENSORCONTRACT_BSCACHE` | `on` (default) \| `off`: cache the block-scatter tables in the plan under the first `(MR, NR, orientation)` it runs with. Bitwise identical |
-| `TENSORCONTRACT_PLANCACHE` | `on` (default) \| `off`: `contract()` keeps the last 16 plans per thread, keyed by everything `Plan::new` reads, so a repeated shape skips planning. Bitwise identical |
+| `TENSORCONTRACT_DIRECT` | `on` \| `off`: force or forbid the unpacked small-contraction path (`direct.rs`); unset, a fixed rule decides. A test override, so CI runs the suite through each path. **Not bitwise identical** to the packed path, but independent of `THREADS` |
 
 `Plan::with_complex_method`, `Plan::with_threads` and `Plan::with_blocking` are
 the programmatic equivalents and take precedence.
+
+Cache sizes are set in code, not by environment: `set_plan_cache_capacity`
+(plans per thread kept by `contract()`, default 16, 0 disables) and
+`set_scratch_limit` (bytes of pack-panel scratch a thread keeps between serial
+calls, default 1 MiB, 0 disables).
 
 ## Starting references
 

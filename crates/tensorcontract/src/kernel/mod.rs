@@ -390,9 +390,7 @@ impl Blocking {
         // changes `kc` alone and leaves the `D` strip a `jr` pass revisits
         // exactly as wide as it was. The item 2 grid needs both arms, because
         // `MC` is bounded from two sides and only the pair separates them (A13).
-        //
-        // Read once per process: this runs on every `Plan::run` through the
-        // per-dtype `config`, and an uncached `getenv` was ~25% of a tiny run.
+        // Cached: this runs on every `Plan::run`.
         let coupled = env_once!(
             Option<usize>,
             "TENSORCONTRACT_KC_COUPLE",
@@ -602,8 +600,7 @@ fn env_blocking() -> Option<BlockingOverride> {
 }
 
 /// One `usize`-valued environment variable, or `None` if unset or unparseable.
-/// Not cached: callers on a hot path must wrap it in a `OnceLock` (as
-/// [`env_blocking`] does) or use `env_once!`.
+/// Not cached; use `env_once!` on hot paths.
 fn env_usize(_key: &str) -> Option<usize> {
     #[cfg(feature = "std")]
     {

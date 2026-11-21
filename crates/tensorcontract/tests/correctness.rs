@@ -1339,11 +1339,8 @@ fn element_op_must_match_the_plan() {
     assert_eq!(d, a.iter().map(|z| z.conj()).collect::<Vec<_>>());
 }
 
-/// One plan run at several element types, with and without `C`, and repeatedly:
-/// the plan caches its block-scatter metadata under the first `(mr, nr, swap)`
-/// it executes with, so a later run at another element type must rebuild its own
-/// rather than reuse that one, and a reused serial scratch buffer must not leak
-/// state from one run into the next.
+/// One plan at several element types, repeated: exercises the plan's
+/// block-scatter cache (keyed by the first element type) and scratch reuse.
 #[test]
 fn one_plan_many_element_types_and_repeats() {
     use tensorcontract::{TensorView, TensorViewMut};
@@ -1406,6 +1403,5 @@ fn one_plan_many_element_types_and_repeats() {
         go::<Complex<f32>>(&plan, (m, k, n), 4, with_c);
         go::<f64>(&plan, (m, k, n), 5, with_c);
     }
-    // A clone carries the cache; it must stay valid.
     go::<Complex<f64>>(&plan.clone(), (m, k, n), 6, true);
 }

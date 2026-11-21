@@ -348,11 +348,14 @@ pub mod plan;
 pub mod reference;
 pub mod scatter;
 
+pub use driver::{scratch_limit, set_scratch_limit};
 pub use element::{Element, Real, C32, C64};
 pub use error::{Error, Result};
 pub use kernel::{Blocking, ComplexMethod, KernelSet};
 pub use layout::Layout;
 pub use plan::{ElementOp, Operand, Plan, PlanStats};
+#[cfg(feature = "std")]
+pub use plan_cache::{plan_cache_capacity, set_plan_cache_capacity};
 
 /// An immutable operand: data, layout and index labels.
 ///
@@ -513,7 +516,6 @@ where
         idx: d.idx,
         op: d.op,
     };
-    // Repeated shapes reuse their plan; see `plan_cache`.
     #[cfg(feature = "std")]
     let plan = plan_cache::plan_for(
         a.operand(),
@@ -663,7 +665,6 @@ impl Plan {
 
     /// Every offset the plan can generate must land inside the slice.
     fn check_bounds(&self, na: usize, nb: usize, nc: Option<usize>, nd: usize) -> Result<()> {
-        // The extremes were computed once in `Plan::new`; this is O(1).
         let check = |(lo, hi): (i64, i64), have: usize, tensor: &'static str| -> Result<()> {
             if lo < 0 || hi < 0 || (hi as usize) >= have.max(1) || have == 0 {
                 return Err(Error::NullPointer { tensor });
