@@ -1,0 +1,5 @@
+Apple M5, macOS (Darwin 27.2.0), single thread, unpinned, 2026-11-22.
+examples/kernel_shapes, three arms each, interleaved before/after (before1, after1, ...).
+before: fb40130 (kernel::simd real holds all of A per k step).
+after: the commit adding this directory (real holds B when NR < MV).
+Score: scripts/kernel-shapes-compare.py kernel-shapes-{before,after}-arm{1,2,3}.txt

@@ -119,12 +119,10 @@ cluster-shared 16 MiB L2 to one thread, a 6x over-allocation).
 
 ## 6. Smaller, and each needing a machine
 
-* **The default `f64` NEON register block spills.** `real` at `8 x 3` keeps all
-  of `A` live with 24 accumulators and spills every `k` step (part 26); the store
-  kernel's order (broadcast `B`, stream `A`) does not, and ran 0.70–0.89 of the
-  time at `k = 256`. Changing `real` changes every ISA's kernel, so it needs
-  `examples/kernel_shapes` in three arms on NEON and AVX-512 (D56) before and after.
-
+* **Re-measure `f64` on NEON.** The default `16 x 3` kernel spilled until part 27
+  (0.78–0.94 of the time end to end at `k > KC` after the fix); every `f64`
+  NEON corpus and TBLIS number predates it. `f32` `32 x 3` jumped 1.6–2x in
+  `kernel_shapes` but is over budget and not yet stable enough to consider.
 * **Re-run the row-block grid at the chosen `kc`.** `kc` decides the regime and
   the shape is chosen inside it; the Phase 3 shapes were chosen at a depth the
   engine may no longer use.

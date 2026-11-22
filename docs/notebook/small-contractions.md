@@ -254,3 +254,37 @@ per `k` step on NEON), which the store kernel's load order avoids. That is a
 defect in the measured register block, open in `open-questions.md`; fixing it
 changes `real` for every ISA and so wants `examples/kernel_shapes` re-run in three
 arms (D56).
+
+### Part 27: the `f64` NEON `real` kernel spilled
+
+Same machine and day. `real` loaded all `MV` vectors of `A` and then broadcast
+`B` one column at a time. At the default `f64` NEON block `8 x 3` (16 x 3) that
+is 24 accumulators plus 8 `A` registers, all 32, before any `B`: the loop spilled
+two accumulators and shuffled 14 registers per `k` step. `real` now holds the
+smaller operand: when `NR < MV` it broadcasts `B` first and streams `A` one
+vector at a time. Same FMAs per accumulator in the same order, so bitwise
+identical. Shapes with `NR >= MV` compile from the unchanged branch — that is
+**every shipped x86 menu entry**, so no x86 kernel changed; on NEON it changes
+`f64` `16 x 3` and `f32` `24 x 4` (and 1m, which reuses `real`, has no such
+entry). Every NEON menu kernel's `K` loop is spill-free afterwards.
+
+`examples/kernel_shapes`, three interleaved arms each
+(`bench-results/ldevos-616-m5/kernel-order/`), median GF/s at `kc` = 16 / 64 /
+256:
+
+| shape | before | after |
+|---|---|---|
+| `f64` real `16 x 3` (default) | 57.5 / 63.6 / 64.0, **unstable** (9.9% spread) | 62.1 / 63.0 / 62.8, stable, best by 2.0x the floor |
+| `f32` real `24 x 4` | 115.2 / 120.4 / 117.7 | 118.3 / 119.3 / 120.0 |
+| `f32` real `32 x 3` (sweep only) | 80.9 / 71.4 / 63.7 | 128.5 / 121.8 / 125.3 |
+| unchanged shapes (control) | — | ~0.96x, the arm-to-arm drift between binaries |
+
+So `16 x 3` was a menu default that the scorer would have rejected as unstable,
+and is now a stable winner; **no menu entry changes**. `f32` `32 x 3` is over
+budget and spread 5.8%, so it is not a candidate on this evidence.
+
+End to end (`f64`, interleaved builds, two arm pairs), where `real` runs — `K`
+blocks after the first, and edge tiles: col-major GEMMs with `k` 300..2048 run
+in **0.78–0.94** of the time (geomean 0.851); shapes that only use the store
+kernel are unchanged (0.98–1.03). Every `f64` NEON number recorded before this
+part (`apple-silicon.md`, `results.md` §7) was measured with the spilling kernel.

@@ -45,6 +45,9 @@ the part a prospective dependant most needs, and it has no KaC category.
 * **The real and planar kernels store full tiles straight to `D` from
   registers** (first `K` block, `beta = 0`), with no tile buffer or separate
   write-back pass (D69, D70). Bitwise identical.
+* **The `f64` NEON real kernel no longer spills**: `real` keeps the smaller of
+  `A` and `B` in registers across a `k` step (D71). Bitwise identical; no x86
+  kernel's code changed.
 
 ### Changed — per-call cost
 
@@ -63,6 +66,7 @@ the part a prospective dependant most needs, and it has no KaC category.
 | Direct path and per-call changes | **Correctness tested** — the randomised sweeps run every problem both with an explicit blocking (packed) and without (direct where the rule applies), and a dedicated test covers the direct path's branches. **Performance measured on one machine** (Apple M5, unpinned, part 23): an MPS gate's reused-plan run is 6.1x faster at 64 bytes and 2.0x at 262 KB, `contract()` ~15x and 3x, and ahead of a hand-written loop from 1 KB up. The `auto` rule's thresholds are fitted there and are a per-microarchitecture claim (A56); x86, where the direct path fuses only with `+fma`, is unmeasured |
 | In-place `B` | **Correctness tested** — a dedicated test checks it bitwise against the packed path and against the oracle, conjugated and tail columns included. **Performance measured on one machine** (Apple M5, part 24): 0.61–0.92 of the packed run time where selected, unchanged elsewhere. x86 unmeasured |
 | Register store | **Correctness tested** by the existing sweeps (mutations of the store kernels' packed, in-place and conjugated `B` loads, their row offsets, `alpha`, and each row-addressing mode of the store all fail them). **Performance measured on one machine** (Apple M5, parts 25–26): 0.950 then 0.859 geomean, ~0.6 at `k <= 8` for `f64`, ~0.95 on the MPS gate overall; worst cell 1.02. x86 unmeasured, and the x86 store kernels have not been checked for spills |
+| `f64` NEON kernel spill fix | **Correctness tested** by the kernel and engine suites. **Performance measured on one machine** (Apple M5, part 27): `kernel_shapes` three arms, `16 x 3` now stable; 0.78–0.94 of the run time for `f64` with `k > KC`. Earlier `f64` NEON numbers predate it |
 
 Note for whoever opens this section: the release procedure changed
 after 0.1.0 shipped — `RELEASING.md` step 2 is now a single

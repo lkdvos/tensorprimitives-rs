@@ -83,14 +83,29 @@ macro_rules! simd_kernels {
                 for p in 0..kc {
                     let ap = a.add(p * mr);
                     let bp = b.add(p * NR);
-                    let mut av = [$zero(); MV];
-                    for u in 0..MV {
-                        av[u] = $load(ap.add(u * L));
-                    }
-                    for j in 0..NR {
-                        let bv = $set1(*bp.add(j));
+                    // Hold the smaller operand across the step: all of `A`
+                    // alongside `MV * NR` accumulators spilled at `8 x 3`.
+                    if NR < MV {
+                        let mut bv = [$zero(); NR];
+                        for j in 0..NR {
+                            bv[j] = $set1(*bp.add(j));
+                        }
                         for u in 0..MV {
-                            acc[j][u] = $fmadd(av[u], bv, acc[j][u]);
+                            let av = $load(ap.add(u * L));
+                            for j in 0..NR {
+                                acc[j][u] = $fmadd(av, bv[j], acc[j][u]);
+                            }
+                        }
+                    } else {
+                        let mut av = [$zero(); MV];
+                        for u in 0..MV {
+                            av[u] = $load(ap.add(u * L));
+                        }
+                        for j in 0..NR {
+                            let bv = $set1(*bp.add(j));
+                            for u in 0..MV {
+                                acc[j][u] = $fmadd(av[u], bv, acc[j][u]);
+                            }
                         }
                     }
                 }
@@ -364,22 +379,34 @@ macro_rules! simd_kernels {
                         bj[j] = b.offset(*cols.add(j));
                     }
                 }
-                // B broadcast first, A streamed one vector at a time: with the
-                // store inlined, holding all of A as `real` does spilled
-                // accumulators at `MV * NR + MV = 32` registers.
+                // Operand order as in `real`.
                 let mut acc = [[$zero(); MV]; NR];
                 for p in 0..kc {
                     let ap = a.add(p * mr);
                     let off = if UB { *koff.add(p) as isize } else { 0 };
                     let bp = b.add(p * NR);
-                    let mut bv = [$zero(); NR];
-                    for j in 0..NR {
-                        bv[j] = $set1(if UB { *bj[j].offset(off) } else { *bp.add(j) });
-                    }
-                    for u in 0..MV {
-                        let av = $load(ap.add(u * L));
+                    let bs = |j: usize| if UB { *bj[j].offset(off) } else { *bp.add(j) };
+                    if NR < MV {
+                        let mut bv = [$zero(); NR];
                         for j in 0..NR {
-                            acc[j][u] = $fmadd(av, bv[j], acc[j][u]);
+                            bv[j] = $set1(bs(j));
+                        }
+                        for u in 0..MV {
+                            let av = $load(ap.add(u * L));
+                            for j in 0..NR {
+                                acc[j][u] = $fmadd(av, bv[j], acc[j][u]);
+                            }
+                        }
+                    } else {
+                        let mut av = [$zero(); MV];
+                        for u in 0..MV {
+                            av[u] = $load(ap.add(u * L));
+                        }
+                        for j in 0..NR {
+                            let bv = $set1(bs(j));
+                            for u in 0..MV {
+                                acc[j][u] = $fmadd(av[u], bv, acc[j][u]);
+                            }
                         }
                     }
                 }

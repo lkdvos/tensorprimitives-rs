@@ -381,3 +381,9 @@ two interleaved arm pairs, 156 cells: geomean **0.950**, worst 1.02; col-major
 arm pairs, 104 cells: geomean **0.859**, worst 1.018; `f64` packed `B`
 0.55–0.66 at `k <= 8`, 0.70–0.89 at `k = 256` (part kernel, see part 26); `c64`
 0.78–0.85 at `k = 4`; MPS gate 0.96–1.0.
+
+**`f64` NEON `real` spill fixed (part 27, D71).** `kernel_shapes` `16 x 3`, three
+arms: 57.5 → 62.1 GF/s at `kc = 16`, within the floor at depth, and no longer
+unstable. End to end, `f64` col-major `k` 300..2048: **0.78–0.94** (geomean
+0.851). Data: `bench-results/ldevos-616-m5/kernel-order/`. The `f64` NEON
+numbers elsewhere in this file predate the fix.
