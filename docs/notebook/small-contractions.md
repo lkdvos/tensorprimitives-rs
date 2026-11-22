@@ -190,3 +190,37 @@ its `K` axis is strided and it has 3–4 slivers. `c64` `B^T` at one or two sliv
 also won (0.57–0.66) despite its strided `K`, which the rule leaves on the table
 rather than add a dtype-specific clause. x86 is unmeasured; there a broadcast
 from memory folds into the FMA, so the in-place kernel may compare differently.
+
+### Part 25: write-back at a compile-time tile shape
+
+Apple M5, single thread, unpinned, 2026-11-22. One machine (A56).
+
+**Ceiling.** Skipping write-back entirely (no `D` stores at all; wrong results,
+timing only) saves 45–58% of a col-major GEMM at `k = 4`, 20–30% at `k = 16`,
+5–15% at `k = 64`, and ~16% of the MPS gate at physical dimension 4. A first
+attempt at this measurement read the hack's flag with `std::env::var_os` per
+tile, which cost as much as it saved and showed nothing; the flag must be
+cached.
+
+**What shipped.** `writeback::full_tile::<T, MV, L, NR>`: the same per-element
+arithmetic as `writeback`, for a full tile of the first `K` block with
+`beta = 0`, with the tile shape a compile-time constant so the loops unroll and
+the three row-addressing modes (unit, strided, table) are each straight-line
+code. The config macro instantiates it per menu shape for the real and planar
+kernels and hands it to the driver as a function pointer; 1m, 3m, the scalar
+kernels, edge tiles, later `K` blocks, `beta != 0` and
+`TENSORCONTRACT_WRITEBACK=gather` keep the general loop. **Bitwise identical**,
+no switch.
+
+Interleaved A/B, two arm pairs, 156 cells (col-major GEMM `m` 16..256, `n`
+64..4096, `k` 4..256, `c64`/`f64`, plus the gate and small-`m` GEMMs): geomean
+**0.950**, worst cell 1.02 (`f64` `m = 64`, `k = 32`, within the session's
+spread). By family: `c64` `k = 4` ~0.80, `k = 8` ~0.90, `k = 16` ~0.95; `f64`
+`k = 4..8` ~0.88; `k >= 64` 0.98–1.00; **MPS gate `d = 3, 4` 0.958**.
+
+**What is left.** That is about a third of the ceiling. The rest is the `D`
+store traffic itself, which any version pays, plus the tile round trip through
+L1 (the kernel's `2*MV*NR` vector stores and the reloads), which only a store
+from registers inside the kernel removes — a per-method epilogue in the kernel
+macros, with the interleave per ISA. Its headroom is bounded by ceiling minus
+this: at most ~10% on the gate, more at `k <= 8`. Not attempted.

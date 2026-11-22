@@ -370,3 +370,9 @@ two interleaved arm pairs, quiet session: col-major GEMM `c64` `m = 4` (`k`
 64..256) **0.61–0.66**, `c64` `m = 8` 0.79–0.87, `f64` `m = 16` 0.69–0.77, `f64`
 `m = 32` 0.87–0.92 (`n` 256..4096). Unselected shapes, the MPS gate among them,
 0.98–1.02. Data: `scratch/ubench/` outside the repo.
+
+**Compile-time-shape write-back (part 25, D69).** Reused-plan run, new over old,
+two interleaved arm pairs, 156 cells: geomean **0.950**, worst 1.02; col-major
+`c64` `k = 4` ~0.80, `k = 16` ~0.95, `k >= 64` 0.98–1.00; MPS gate `d = 3, 4`
+**0.958**. Skipping write-back altogether bounds what any version can save:
+45–58% at `k = 4`, ~16% on the gate.

@@ -329,6 +329,9 @@ pub struct Ukr<T> {
     /// `func` with `B` read in place instead of from a packed sliver, where
     /// the kernel has one. Must perform the same arithmetic as `func`.
     pub func_ub: Option<UbFn<T>>,
+    /// Write-back of a full tile at this shape with `beta = 0`, where the tile
+    /// format is `Real` or `Planar`.
+    pub wb_full: Option<crate::writeback::WbFn<T>>,
     /// Kernel name, e.g. `"avx512-planar"`. Reported by
     /// [`selected_kernel_name`] and used to label measurements, so a number can
     /// always be traced to the code that produced it.

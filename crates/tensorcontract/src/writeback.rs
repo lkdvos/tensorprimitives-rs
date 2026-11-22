@@ -42,7 +42,7 @@ use crate::scatter::IRREGULAR;
 /// makes the fast path an A/B switch at run time rather than a rebuild, so the
 /// two arms can be measured in one session under identical conditions. Read
 /// once per process.
-fn force_gather() -> bool {
+pub(crate) fn force_gather() -> bool {
     env_once!(bool, "TENSORCONTRACT_WRITEBACK", false, |v: &str| v
         .eq_ignore_ascii_case("gather")
         || v.eq_ignore_ascii_case("scatter"))
@@ -292,5 +292,73 @@ pub(crate) unsafe fn scale_only<T: Element>(
             }
             *d_base.offset((dri + dcj) as isize) = v;
         }
+    }
+}
+
+/// [`full_tile`] with `T` erased to its real type, so a kernel config can carry
+/// it: `(ab, d, rows, d_rs, cols, alpha, conj_d)`, `d` and `alpha` pointing at
+/// `T` values.
+pub type WbFn<R> = unsafe fn(*const R, *mut R, *const i64, i64, *const i64, *const R, bool);
+
+/// [`writeback`] for one full tile with `beta = 0`, its shape `(MV * L) x NR`
+/// fixed at compile time so the loops unroll. Same arithmetic per element, so
+/// bitwise identical. `T` decides the tile format: `Real`, or `Planar` for a
+/// complex `T`.
+///
+/// # Safety
+/// As [`writeback`] with `mrem = MV * L`, `nrem = NR`; `rows` must hold `MV * L`
+/// offsets unless `d_rs` is regular, and `cols` `NR`.
+pub(crate) unsafe fn full_tile<T: Element, const MV: usize, const L: usize, const NR: usize>(
+    ab: *const T::Real,
+    d: *mut T::Real,
+    rows: *const i64,
+    d_rs: i64,
+    cols: *const i64,
+    alpha: *const T::Real,
+    conj_d: bool,
+) {
+    let mr = MV * L;
+    let d = d as *mut T;
+    let alpha = *(alpha as *const T);
+    let fmt = if T::IS_COMPLEX {
+        TileFormat::Planar
+    } else {
+        TileFormat::Real
+    };
+    let plain = !conj_d && alpha == T::one();
+    let r0 = *rows;
+    macro_rules! body {
+        ($row:expr, $op:expr) => {
+            for j in 0..NR {
+                let dc = *cols.add(j);
+                for i in 0..mr {
+                    let (re, im) = tile_value::<T::Real>(ab, fmt, mr, NR, i, j);
+                    *d.offset(($row(i) + dc) as isize) = $op(T::from_parts(re, im));
+                }
+            }
+        };
+    }
+    macro_rules! rows {
+        ($op:expr) => {
+            if d_rs == 1 {
+                body!(|i: usize| r0 + i as i64, $op)
+            } else if d_rs != IRREGULAR {
+                body!(|i: usize| r0 + d_rs * i as i64, $op)
+            } else {
+                body!(|i: usize| *rows.add(i), $op)
+            }
+        };
+    }
+    if plain {
+        rows!(|v: T| v)
+    } else {
+        rows!(|v: T| {
+            let v = v.mul(alpha);
+            if conj_d {
+                v.conj()
+            } else {
+                v
+            }
+        })
     }
 }

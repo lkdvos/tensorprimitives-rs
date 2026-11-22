@@ -42,6 +42,9 @@ the part a prospective dependant most needs, and it has no KaC category.
 * **`B` read in place** by the real and planar micro-kernels when `B`'s `K`
   axis is unit-stride and `M` spans at most two row slivers, skipping its pack
   (D68). Bitwise identical to the packed path.
+* **Full tiles are written back by a routine instantiated at the kernel's tile
+  shape** (first `K` block, `beta = 0`, real and planar), so its loops unroll
+  (D69). Bitwise identical.
 
 ### Changed — per-call cost
 
@@ -59,6 +62,7 @@ the part a prospective dependant most needs, and it has no KaC category.
 |---|---|
 | Direct path and per-call changes | **Correctness tested** — the randomised sweeps run every problem both with an explicit blocking (packed) and without (direct where the rule applies), and a dedicated test covers the direct path's branches. **Performance measured on one machine** (Apple M5, unpinned, part 23): an MPS gate's reused-plan run is 6.1x faster at 64 bytes and 2.0x at 262 KB, `contract()` ~15x and 3x, and ahead of a hand-written loop from 1 KB up. The `auto` rule's thresholds are fitted there and are a per-microarchitecture claim (A56); x86, where the direct path fuses only with `+fma`, is unmeasured |
 | In-place `B` | **Correctness tested** — a dedicated test checks it bitwise against the packed path and against the oracle, conjugated and tail columns included. **Performance measured on one machine** (Apple M5, part 24): 0.61–0.92 of the packed run time where selected, unchanged elsewhere. x86 unmeasured |
+| Compile-time-shape write-back | **Correctness tested** by the existing sweeps (mutations of each row-addressing mode, `alpha` and `conj_d` all fail them). **Performance measured on one machine** (Apple M5, part 25): 0.950 geomean over 156 cells, ~0.80 at `k = 4`, 0.958 on the MPS gate; worst cell 1.02. x86 unmeasured |
 
 Note for whoever opens this section: the release procedure changed
 after 0.1.0 shipped — `RELEASING.md` step 2 is now a single

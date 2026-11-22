@@ -123,7 +123,7 @@ use crate::kernel::{config_for_plan, Blocking, KernelSet, UbFn, Ukr};
 use crate::pack::{pack_panel, panel_len};
 use crate::plan::Plan;
 use crate::scatter::IRREGULAR;
-use crate::writeback::{scale_only, writeback};
+use crate::writeback::{force_gather, scale_only, writeback, WbFn};
 
 /// A raw pointer shared across the threads of one [`execute`] call.
 ///
@@ -198,6 +198,8 @@ where
     bp: Shared<T::Real>,
     /// Read `B` in place with this kernel instead of packing it.
     ub: Option<UbFn<T::Real>>,
+    /// Write-back for full tiles of the first `K` block when `beta = 0`.
+    wb_full: Option<WbFn<T::Real>>,
 }
 
 /// Where one thread sits in the `pm x pn` partition, as far as loop 5 and the
@@ -510,6 +512,7 @@ pub(crate) unsafe fn execute_capped<T>(
         d: Shared(d),
         bp: Shared(bp_ptr),
         ub,
+        wb_full: ukr.wb_full.filter(|_| beta == T::zero() && !force_gather()),
     };
 
     if p == 1 {
@@ -678,6 +681,7 @@ unsafe fn run_strip<T>(
         alpha,
         beta,
         ub,
+        wb_full,
         ..
     } = *cx;
     let (ptr_a, ptr_b, c, d, bp_ptr) = (cx.a.0, cx.b.0, cx.c.0 as *const T, cx.d.0, cx.bp.0);
@@ -801,7 +805,18 @@ unsafe fn run_strip<T>(
                             }
 
                             let d_rs = *d_m_bs.get_unchecked(i0 / mr);
-                            if first_k_block {
+                            let full = mrem == mr && nrem == nr;
+                            if let (true, true, Some(f)) = (first_k_block, full, wb_full) {
+                                f(
+                                    tile_ptr,
+                                    dh as *mut T::Real,
+                                    dm.as_ptr().add(i0),
+                                    d_rs,
+                                    dn.as_ptr().add(j0),
+                                    &alpha as *const T as *const T::Real,
+                                    plan.conj_d,
+                                );
+                            } else if first_k_block {
                                 let c_rs = c_m_bs.get(i0 / mr).copied().unwrap_or(IRREGULAR);
                                 writeback::<T>(
                                     tile_ptr,
