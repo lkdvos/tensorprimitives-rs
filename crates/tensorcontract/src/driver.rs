@@ -119,7 +119,7 @@ use std::sync::Barrier;
 
 use crate::buffer::{Panel, Scratch};
 use crate::element::Element;
-use crate::kernel::{config_for_plan, Blocking, KernelSet, Ukr};
+use crate::kernel::{config_for_plan, Blocking, KernelSet, UbFn, Ukr};
 use crate::pack::{pack_panel, panel_len};
 use crate::plan::Plan;
 use crate::scatter::IRREGULAR;
@@ -196,6 +196,8 @@ where
     d: Shared<T>,
     /// The shared packed-`B` panel: written cooperatively, read by everyone.
     bp: Shared<T::Real>,
+    /// Read `B` in place with this kernel instead of packing it.
+    ub: Option<UbFn<T::Real>>,
 }
 
 /// Where one thread sits in the `pm x pn` partition, as far as loop 5 and the
@@ -450,7 +452,14 @@ pub(crate) unsafe fn execute_capped<T>(
     let kc_buf = kc.min(k.max(1));
     let ap_len = panel_len(mc, mr, kc_buf, ukr.a_pack);
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
-    let b_group = panel_len(group_cap * nr, nr, kc_buf, ukr.b_pack);
+    let ub = ukr
+        .func_ub
+        .filter(|_| nr <= MAX_NR && unpacked_b(npanels, bk));
+    let b_group = if ub.is_some() {
+        0
+    } else {
+        panel_len(group_cap * nr, nr, kc_buf, ukr.b_pack)
+    };
     let bp_len = pn * b_group;
 
     let mut scratch = None;
@@ -500,6 +509,7 @@ pub(crate) unsafe fn execute_capped<T>(
         c: Shared(c as *mut T),
         d: Shared(d),
         bp: Shared(bp_ptr),
+        ub,
     };
 
     if p == 1 {
@@ -667,10 +677,12 @@ unsafe fn run_strip<T>(
         conj_b,
         alpha,
         beta,
+        ub,
         ..
     } = *cx;
     let (ptr_a, ptr_b, c, d, bp_ptr) = (cx.a.0, cx.b.0, cx.c.0 as *const T, cx.d.0, cx.bp.0);
     let one = T::one();
+    let mut cols = [0isize; MAX_NR];
 
     for h in 0..plan.stats.batch {
         let ah = ptr_a.offset(ha[h] as isize);
@@ -708,10 +720,10 @@ unsafe fn run_strip<T>(
                     "column group overruns its slice of the packed B panel"
                 );
                 let bp_ptr = bp_ptr.add(bpart.g * b_group);
-                if let Some(bar) = bpart.bar {
+                if let (None, Some(bar)) = (ub, bpart.bar) {
                     bar.wait();
                 }
-                if w1 > w0 {
+                if ub.is_none() && w1 > w0 {
                     let c0 = jc + w0 * nr;
                     let c1 = (jc + w1 * nr).min(jc + jc_len);
                     pack_panel::<T>(
@@ -725,7 +737,7 @@ unsafe fn run_strip<T>(
                         bp_ptr.add((w0 - q0) * b_sliver),
                     );
                 }
-                if let Some(bar) = bpart.bar {
+                if let (None, Some(bar)) = (ub, bpart.bar) {
                     bar.wait();
                 }
 
@@ -760,6 +772,13 @@ unsafe fn run_strip<T>(
                         let nrem = nr.min(jc_len - jr);
                         let j0 = jc + jr;
                         let bpan = bp_ptr.add((jr / nr - q0) * b_sliver);
+                        // Tail columns alias the last valid one, so every read
+                        // stays in bounds; write-back stores only `nrem`.
+                        if ub.is_some() {
+                            for (j, c) in cols[..nr].iter_mut().enumerate() {
+                                *c = *bn.get_unchecked(j0 + j.min(nrem - 1)) as isize;
+                            }
+                        }
 
                         // ---- loop 1: MR -----------------------------------
                         let mut ir = 0;
@@ -768,7 +787,18 @@ unsafe fn run_strip<T>(
                             let i0 = ic + ir;
                             let apan = ap_ptr.add((ir / mr) * a_sliver);
 
-                            (ukr.func)(pc_len, apan, bpan, tile_ptr);
+                            match ub {
+                                Some(f) => f(
+                                    pc_len,
+                                    apan,
+                                    bh as *const T::Real,
+                                    cols.as_ptr(),
+                                    bk.as_ptr().add(pc),
+                                    conj_b,
+                                    tile_ptr,
+                                ),
+                                None => (ukr.func)(pc_len, apan, bpan, tile_ptr),
+                            }
 
                             let d_rs = *d_m_bs.get_unchecked(i0 / mr);
                             if first_k_block {
@@ -828,4 +858,18 @@ unsafe fn run_strip<T>(
             jc += nc;
         }
     }
+}
+
+/// Bound on `NR` for the in-place column table.
+const MAX_NR: usize = 32;
+
+/// Most row slivers for which reading `B` in place beat packing it (M5).
+const MAX_UB_PANELS: usize = 2;
+
+/// Read `B` in place when few row slivers would reuse a packed panel and `B`'s
+/// `K` axis is unit-stride. A strided `K` axis puts every `K` step of a sliver
+/// on its own cache line (with a power-of-two stride, in one L1 set), which was
+/// measured up to 1.7x slower than packing.
+fn unpacked_b(npanels: usize, bk: &[i64]) -> bool {
+    npanels <= MAX_UB_PANELS && bk.windows(2).all(|w| w[1] - w[0] == 1)
 }

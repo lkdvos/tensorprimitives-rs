@@ -134,3 +134,59 @@ driver on small shapes. `threaded_clamps_below_one_cell_per_thread` uses a deepe
 `k` so its small-`m` cases still reach the threaded driver, and
 `direct_path_matches_the_oracle` covers the direct path's branches; a mutation in
 each of its contiguous load, contiguous store and conjugation paths fails it.
+
+### Part 24: reading `B` in place
+
+Apple M5, single thread, unpinned, 2026-11-22; quiet session (repeat arms agree
+within ~1% on the confirmation run, p90 4.9% on the fitting grid). One machine,
+so the rule is a per-microarchitecture claim (A56).
+
+QuasiStrided.jl's one surviving no-pack path reads the broadcast operand `B` in
+place when `M` is small (`UNPACKED_B_MMAX = 256`, underived). The packed kernels
+consume `B` one broadcast scalar per column per `k` step, so a kernel reading
+`b[cols[j] + koff[p]]` straight from the operand performs the identical FMA
+sequence: **bitwise identical to the packed path**, so the choice may depend on
+anything, including the thread count.
+
+**Upper bound first.** Skipping `B`'s pack after the first call (wrong results,
+timing only) showed packing `B` costing up to ~45% of a `c64` col-major GEMM at
+`m = 4`, but at most ~6% on the MPS gate at physical dimension 3–4 — there the
+plan transposes, `B` is `th`, its `N` axis is unit-stride, and the pack is a
+fast contiguous copy reused by 3–4 row slivers.
+
+**First kernel lost everywhere** (1.4–1.9x at several slivers, 1.1x at one).
+The `planar` variant took conjugation as a runtime sign; the extra register
+spilled an accumulator to the stack every `k` step, a store-to-load chain on the
+critical path. Conjugation now picks the FMA sign through a const generic, which
+rounds identically and costs no register; the spill is gone.
+
+**Second kernel, 264-cell grid** (`c64`/`f64`, col-major `B` and `B^T`, `m`
+4..256, `n` 256..4096, `k` 16..256, plus the gate), forced on vs off:
+
+* wins track two features: few row slivers, and `B`'s `K` axis unit-stride.
+  `c64` 0.63–0.68 at one sliver, ~0.85 at two, ~0.97 at four; `f64` ~0.72 at
+  one, ~0.9 at two; from eight slivers it loses 5–11%.
+* a strided `K` axis loses badly: `f64` `B^T` 1.2–1.7x slower from two slivers.
+  Every `k` step of a sliver is its own cache line, and with a power-of-two
+  stride they share one L1 set. The gate (`K` stride `l`) lost 7–11%.
+  QuasiStrided.jl's condition that `B`'s `K` axis be unit-stride is this.
+
+Rule scored offline over the non-direct cells: `K` unit-stride and `<= 2` row
+slivers is 0.970 geomean with no selected cell slower (per-cell oracle 0.948);
+`<= 4` adds nothing beyond noise. **Shipped at 2, no switch.** The confirmation
+run (rule vs off, two interleaved arm pairs):
+
+| case | in-place / packed |
+|---|---|
+| `c64` col-major, `m = 4`, `k` 64..256 | 0.61–0.66 |
+| `c64` col-major, `m = 8` | 0.79–0.87 |
+| `f64` col-major, `m = 16` | 0.69–0.77 |
+| `f64` col-major, `m = 32` | 0.87–0.92 |
+| unselected cells (gate, `m >= 16` `c64`, `m >= 64` `f64`, `B^T`) | 0.98–1.02 |
+
+Real and planar kernels only; 1m and 3m keep packing (1m's "1r" `B` needs a
+doubled offset table, 3m a derived sum plane). **Nothing here helps the MPS gate**:
+its `K` axis is strided and it has 3–4 slivers. `c64` `B^T` at one or two slivers
+also won (0.57–0.66) despite its strided `K`, which the rule leaves on the table
+rather than add a dtype-specific clause. x86 is unmeasured; there a broadcast
+from memory folds into the FMA, so the in-place kernel may compare differently.

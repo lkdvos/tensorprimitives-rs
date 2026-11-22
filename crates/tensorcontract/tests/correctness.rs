@@ -1509,3 +1509,124 @@ fn direct_path_matches_the_oracle() {
     sweep::<Complex<f64>>(0xD3, true);
     sweep::<Complex<f32>>(0xD4, true);
 }
+
+/// Shapes that miss the direct path and fit one `MC` block, so `B` is read in
+/// place; rerun with `MC = MR`, which packs `B`, they must agree bitwise.
+#[test]
+fn unpacked_b_matches_packed_b_and_the_oracle() {
+    fn sweep<T>(seed: u64, complex: bool)
+    where
+        T: Element,
+        T::Real: KernelSet,
+    {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let (m, n, k, h) = (1i64, 2i64, 3i64, 4i64);
+        let shapes = [
+            (8, 37, 140, 1),
+            (16, 50, 40, 1),
+            (5, 23, 200, 2),
+            (24, 13, 64, 1),
+            (12, 7, 300, 1),
+        ];
+        for (sm, sn, sk, sh) in shapes {
+            for trial in 0..6u32 {
+                let batched = sh > 1;
+                let with_h = |v: Vec<i64>| -> Vec<i64> {
+                    if batched {
+                        v.into_iter().chain([h]).collect()
+                    } else {
+                        v
+                    }
+                };
+                let e = |idx: &[i64]| -> Vec<i64> {
+                    idx.iter()
+                        .map(|&l| [sm, sn, sk, sh][(l - 1) as usize])
+                        .collect()
+                };
+                let idx_a = with_h(vec![m, k]);
+                let idx_b = with_h(if trial % 3 == 1 {
+                    vec![n, k]
+                } else {
+                    vec![k, n]
+                });
+                let idx_d = with_h(vec![m, n]);
+                let lay = |idx: &[i64], rng: &mut ChaCha8Rng| {
+                    if trial % 3 == 2 {
+                        random_layout(&e(idx), rng)
+                    } else {
+                        Layout::col_major(&e(idx))
+                    }
+                };
+                let p = Problem {
+                    la: lay(&idx_a, &mut rng),
+                    lb: lay(&idx_b, &mut rng),
+                    lc: lay(&idx_d, &mut rng),
+                    ld: lay(&idx_d, &mut rng),
+                    conj_a: complex && trial & 2 != 0,
+                    conj_b: complex && trial & 1 != 0,
+                    conj_c: false,
+                    conj_d: complex && trial == 5,
+                    use_c: trial % 2 == 0,
+                    idx_c: idx_d.clone(),
+                    idx_a,
+                    idx_b,
+                    idx_d,
+                };
+                let err = check_problem::<T>(&p, &mut rng, None, ComplexMethod::Planar);
+                assert!(
+                    err <= tol::<T>(ComplexMethod::Planar),
+                    "shape {:?} trial {trial}: relative error {err:e}\n{p}",
+                    (sm, sn, sk, sh)
+                );
+
+                let a: Vec<T> = fill(p.la.storage_len() as usize, &mut rng);
+                let b: Vec<T> = fill(p.lb.storage_len() as usize, &mut rng);
+                let alpha = sample::<T>(&mut rng);
+                let plan = Plan::new(
+                    Operand {
+                        layout: &p.la,
+                        idx: &p.idx_a,
+                        op: op(p.conj_a),
+                    },
+                    Operand {
+                        layout: &p.lb,
+                        idx: &p.idx_b,
+                        op: op(p.conj_b),
+                    },
+                    None,
+                    Operand {
+                        layout: &p.ld,
+                        idx: &p.idx_d,
+                        op: op(p.conj_d),
+                    },
+                )
+                .expect("plan");
+                let (mr, _, blk) = tensorcontract::kernel::plan_config::<T>(&plan);
+                let packed = plan.clone().with_blocking(Blocking { mc: mr, ..blk });
+                let run = |pl: &Plan| {
+                    let mut d = vec![T::zero(); p.ld.storage_len() as usize];
+                    unsafe {
+                        pl.run_raw::<T>(
+                            alpha,
+                            a.as_ptr(),
+                            b.as_ptr(),
+                            T::zero(),
+                            core::ptr::null(),
+                            d.as_mut_ptr(),
+                        );
+                    }
+                    d
+                };
+                assert!(
+                    run(&plan) == run(&packed),
+                    "shape {:?} trial {trial}: in-place B differs from packed B\n{p}",
+                    (sm, sn, sk, sh)
+                );
+            }
+        }
+    }
+    sweep::<f64>(0xB1, false);
+    sweep::<f32>(0xB2, false);
+    sweep::<Complex<f64>>(0xB3, true);
+    sweep::<Complex<f32>>(0xB4, true);
+}

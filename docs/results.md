@@ -364,3 +364,9 @@ per-cell best of direct vs packed on a 648-cell column-major GEMM grid (`m`
 1..64, `n` 8..4096, `k` 1..32): packed-only is 1.38x (`c64`) / 1.39x (`f64`) off
 in geomean; the shipped rule ~1.02x / ~1.01x. Notebook:
 [`small-contractions.md`](notebook/small-contractions.md).
+
+**Reading `B` in place (part 24, D68).** Reused-plan run, in-place over packed,
+two interleaved arm pairs, quiet session: col-major GEMM `c64` `m = 4` (`k`
+64..256) **0.61–0.66**, `c64` `m = 8` 0.79–0.87, `f64` `m = 16` 0.69–0.77, `f64`
+`m = 32` 0.87–0.92 (`n` 256..4096). Unselected shapes, the MPS gate among them,
+0.98–1.02. Data: `scratch/ubench/` outside the repo.

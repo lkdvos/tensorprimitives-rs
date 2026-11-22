@@ -240,6 +240,108 @@ macro_rules! simd_kernels {
                 }
             }
 
+            /// [`real`] reading `B` in place: element `(j, p)` of the sliver is
+            /// `b[cols[j] + koff[p]]`. Same FMA sequence, so bitwise identical.
+            ///
+            /// # Safety
+            /// As [`real`], with `cols` valid for `NR` reads, `koff` for `kc`,
+            /// and every `b[cols[j] + koff[p]]` valid. `conj` is unused.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn real_ub<const MV: usize, const NR: usize>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                _conj: bool,
+                ab: *mut $t,
+            ) {
+                let mr = MV * L;
+                let mut bj = [b; NR];
+                for j in 0..NR {
+                    bj[j] = b.offset(*cols.add(j));
+                }
+                let mut acc = [[$zero(); MV]; NR];
+                for p in 0..kc {
+                    let ap = a.add(p * mr);
+                    let off = *koff.add(p) as isize;
+                    let mut av = [$zero(); MV];
+                    for u in 0..MV {
+                        av[u] = $load(ap.add(u * L));
+                    }
+                    for j in 0..NR {
+                        let bv = $set1(*bj[j].offset(off));
+                        for u in 0..MV {
+                            acc[j][u] = $fmadd(av[u], bv, acc[j][u]);
+                        }
+                    }
+                }
+                for j in 0..NR {
+                    for u in 0..MV {
+                        $store(ab.add(j * mr + u * L), acc[j][u]);
+                    }
+                }
+            }
+
+            /// [`planar`] reading interleaved complex `B` in place; offsets are
+            /// in complex elements. `CJ` conjugates `B` by swapping the FMA
+            /// sign rather than negating, which rounds identically and costs no
+            /// register (a runtime sign spilled an accumulator).
+            ///
+            /// # Safety
+            /// As [`real_ub`], for complex elements.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn planar_ub<const MV: usize, const NR: usize, const CJ: bool>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                ab: *mut $t,
+            ) {
+                let mr = MV * L;
+                let mut bj = [b; NR];
+                for j in 0..NR {
+                    bj[j] = b.offset(2 * *cols.add(j));
+                }
+                let mut cr = [[$zero(); MV]; NR];
+                let mut ci = [[$zero(); MV]; NR];
+                for p in 0..kc {
+                    let are = a.add(p * 2 * mr);
+                    let aim = are.add(mr);
+                    let off = 2 * *koff.add(p) as isize;
+                    let mut ar = [$zero(); MV];
+                    let mut ai = [$zero(); MV];
+                    for u in 0..MV {
+                        ar[u] = $load(are.add(u * L));
+                        ai[u] = $load(aim.add(u * L));
+                    }
+                    for j in 0..NR {
+                        let q = bj[j].offset(off);
+                        let br = $set1(*q);
+                        let bi = $set1(*q.add(1));
+                        for u in 0..MV {
+                            cr[j][u] = $fmadd(ar[u], br, cr[j][u]);
+                            if CJ {
+                                cr[j][u] = $fmadd(ai[u], bi, cr[j][u]);
+                                ci[j][u] = $fnmadd(ar[u], bi, ci[j][u]);
+                            } else {
+                                cr[j][u] = $fnmadd(ai[u], bi, cr[j][u]);
+                                ci[j][u] = $fmadd(ar[u], bi, ci[j][u]);
+                            }
+                            ci[j][u] = $fmadd(ai[u], br, ci[j][u]);
+                        }
+                    }
+                }
+                let plane = mr * NR;
+                for j in 0..NR {
+                    for u in 0..MV {
+                        $store(ab.add(j * mr + u * L), cr[j][u]);
+                        $store(ab.add(plane + j * mr + u * L), ci[j][u]);
+                    }
+                }
+            }
+
             // ---- plain-fn trampolines ---------------------------------------
             //
             // A `#[target_feature]` function cannot be coerced to a function
@@ -273,6 +375,40 @@ macro_rules! simd_kernels {
                 ab: *mut $t,
             ) {
                 planar::<MV, NR>(kc, a, b, ab)
+            }
+            /// Function-pointer form of [`real_ub`].
+            ///
+            /// # Safety
+            /// As [`real_ub`], including the target-feature requirement.
+            pub unsafe fn tramp_real_ub<const MV: usize, const NR: usize>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                conj: bool,
+                ab: *mut $t,
+            ) {
+                real_ub::<MV, NR>(kc, a, b, cols, koff, conj, ab)
+            }
+            /// Function-pointer form of [`planar_ub`].
+            ///
+            /// # Safety
+            /// As [`planar_ub`], including the target-feature requirement.
+            pub unsafe fn tramp_planar_ub<const MV: usize, const NR: usize>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                conj: bool,
+                ab: *mut $t,
+            ) {
+                if conj {
+                    planar_ub::<MV, NR, true>(kc, a, b, cols, koff, ab)
+                } else {
+                    planar_ub::<MV, NR, false>(kc, a, b, cols, koff, ab)
+                }
             }
             /// Function-pointer form of [`onem`].
             ///
@@ -356,6 +492,7 @@ macro_rules! configs {
                     b_pack: PackFormat::Real,
                     tile_fmt: TileFormat::Real,
                     func: $m::tramp_real::<MV, NR>,
+                    func_ub: Some($m::tramp_real_ub::<MV, NR>),
                     name: concat!($isa, "-real"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 1, 1),
@@ -375,6 +512,7 @@ macro_rules! configs {
                     b_pack: PackFormat::Planar,
                     tile_fmt: TileFormat::Planar,
                     func: $m::tramp_planar::<MV, NR>,
+                    func_ub: Some($m::tramp_planar_ub::<MV, NR>),
                     name: concat!($isa, "-planar"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 2, 2),
@@ -396,6 +534,7 @@ macro_rules! configs {
                     b_pack: PackFormat::Planar,
                     tile_fmt: TileFormat::OneM,
                     func: $m::tramp_onem::<MV, NR>,
+                    func_ub: None,
                     name: concat!($isa, "-1m"),
                 },
                 // Four reals per complex element in packed A, so the same L2
@@ -417,6 +556,7 @@ macro_rules! configs {
                     b_pack: PackFormat::ThreeM,
                     tile_fmt: TileFormat::ThreeM,
                     func: $m::tramp_threem::<MV, NR>,
+                    func_ub: None,
                     name: concat!($isa, "-3m"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 3, 3),

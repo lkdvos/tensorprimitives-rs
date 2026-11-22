@@ -1174,3 +1174,24 @@ of the small-`k` overhead is write-back.
 
 **What would reopen it.** A format that writes fewer bytes, or a machine where
 the scalar packer is far from its store limit (x86 strided `B` is unmeasured).
+
+## Reading `B` in place when its `K` axis is strided (part 24)
+
+**Tried.** The in-place-`B` kernel (D68) on every shape whose packed path it
+could replace, including `B` stored `N`-major (`B^T`) and the MPS gate, whose `B`
+has `K` stride `l`.
+
+**Expected / what happened.** Expected a win wherever few row slivers reuse the
+packed panel, as QuasiStrided.jl's `M <= 256` rule suggests. With a strided `K`
+axis, `f64` `B^T` ran **1.2–1.7x slower** from two slivers up and the gate 7–11%
+slower: each `k` step of a sliver is a separate cache line, and a power-of-two
+stride maps them to one L1 set. `c64` `B^T` at one or two slivers was the
+exception (0.57–0.66), left unused rather than special-cased.
+
+**Confidence.** `measured once`, Apple M5, interleaved arms, p90 spread 4.9%.
+
+**Evidence.** notebook `small-contractions.md` part 24; `scratch/ubench/`
+outside the repo.
+
+**What would reopen it.** A kernel that loads `B` pairs or vectors rather than
+scalars (fewer lines per step), or a machine where the L1 is more associative.

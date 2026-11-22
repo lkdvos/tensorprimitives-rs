@@ -288,6 +288,10 @@ pub enum TileFormat {
     ThreeM,
 }
 
+/// A kernel reading `B` in place: `(kc, a, b, cols, koff, conj_b, ab)`, where
+/// sliver element `(j, p)` is `b[cols[j] + koff[p]]` in `Element` units.
+pub type UbFn<T> = unsafe fn(usize, *const T, *const T, *const isize, *const i64, bool, *mut T);
+
 /// A micro-kernel: register-blocked panel-panel product.
 #[derive(Clone, Copy)]
 pub struct Ukr<T> {
@@ -322,6 +326,9 @@ pub struct Ukr<T> {
     /// this pointer through a plain-`fn` trampoline, so the CPU-feature check
     /// belongs to whoever built the [`Ukr`], not to the caller.
     pub func: unsafe fn(kc: usize, a: *const T, b: *const T, ab: *mut T),
+    /// `func` with `B` read in place instead of from a packed sliver, where
+    /// the kernel has one. Must perform the same arithmetic as `func`.
+    pub func_ub: Option<UbFn<T>>,
     /// Kernel name, e.g. `"avx512-planar"`. Reported by
     /// [`selected_kernel_name`] and used to label measurements, so a number can
     /// always be traced to the code that produced it.
