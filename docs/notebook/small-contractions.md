@@ -218,9 +218,39 @@ Interleaved A/B, two arm pairs, 156 cells (col-major GEMM `m` 16..256, `n`
 spread). By family: `c64` `k = 4` ~0.80, `k = 8` ~0.90, `k = 16` ~0.95; `f64`
 `k = 4..8` ~0.88; `k >= 64` 0.98–1.00; **MPS gate `d = 3, 4` 0.958**.
 
-**What is left.** That is about a third of the ceiling. The rest is the `D`
-store traffic itself, which any version pays, plus the tile round trip through
-L1 (the kernel's `2*MV*NR` vector stores and the reloads), which only a store
-from registers inside the kernel removes — a per-method epilogue in the kernel
-macros, with the interleave per ISA. Its headroom is bounded by ceiling minus
-this: at most ~10% on the gate, more at `k <= 8`. Not attempted.
+**What was left** after that was about two thirds of the ceiling: the `D` store
+traffic, which any version pays, and the tile's round trip through L1.
+
+### Part 26: storing from registers
+
+Same machine and day. `real_st` / `planar_st` in the kernel macro accumulate as
+`real` / `planar` (packed `B`, or in place under `UB`) and finish by calling
+`full_tile` on their accumulator arrays. Inlined, every access to the arrays is
+at a constant offset, so they stay in registers and the tile never touches
+memory; the store arithmetic is `full_tile`'s, so the result is bitwise
+identical, and the per-ISA code is unchanged (no explicit interleave). Used for
+every full tile of the first `K` block with `beta = 0`, which makes the part 25
+function-pointer path dead; it was removed, and `full_tile` survives as the
+epilogue.
+
+**The first version lost 1.15–1.58x** on `f64` packed-`B` tiles from `k = 16`.
+The default `f64` NEON block is `8 x 3`: 24 accumulators plus 8 `A` vectors is
+all 32 registers before `B` is loaded, and with the epilogue inlined LLVM spilled
+two accumulators and shuffled registers every `k` step. `real_st` now broadcasts
+`B` first and streams `A` one vector at a time (28 live registers); same FMAs per
+accumulator in the same order. No store kernel's `K` loop touches the stack after
+that, on any NEON menu shape (several `f32` shapes still go through the stack in
+the epilogue, where LLVM did not fully unroll; no worse than before).
+
+Interleaved A/B against part 25, two arm pairs, 104 cells: geomean **0.859**,
+worst 1.018. `f64` packed `B` 0.55–0.66 at `k = 4..8` and still 0.70–0.89 at
+`k = 256`; `c64` 0.78–0.85 at `k = 4`, ~0.9 at `k = 8`, ~0.98 from `k = 16`;
+`f64` in-place `B` 0.67–0.86; MPS gate 0.96–1.0 — its remaining write-back cost
+is the strided `D` stores themselves.
+
+**The `f64` win at `k = 256` is not write-back.** The shipped `real` kernel at
+`8 x 3` spills in its own `K` loop (4 vector stack accesses and 14 register moves
+per `k` step on NEON), which the store kernel's load order avoids. That is a
+defect in the measured register block, open in `open-questions.md`; fixing it
+changes `real` for every ISA and so wants `examples/kernel_shapes` re-run in three
+arms (D56).

@@ -376,3 +376,8 @@ two interleaved arm pairs, 156 cells: geomean **0.950**, worst 1.02; col-major
 `c64` `k = 4` ~0.80, `k = 16` ~0.95, `k >= 64` 0.98–1.00; MPS gate `d = 3, 4`
 **0.958**. Skipping write-back altogether bounds what any version can save:
 45–58% at `k = 4`, ~16% on the gate.
+
+**Storing tiles from registers (part 26, D70).** Over part 25, two interleaved
+arm pairs, 104 cells: geomean **0.859**, worst 1.018; `f64` packed `B`
+0.55–0.66 at `k <= 8`, 0.70–0.89 at `k = 256` (part kernel, see part 26); `c64`
+0.78–0.85 at `k = 4`; MPS gate 0.96–1.0.

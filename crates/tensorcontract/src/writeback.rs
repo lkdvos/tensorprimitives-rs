@@ -295,19 +295,16 @@ pub(crate) unsafe fn scale_only<T: Element>(
     }
 }
 
-/// [`full_tile`] with `T` erased to its real type, so a kernel config can carry
-/// it: `(ab, d, rows, d_rs, cols, alpha, conj_d)`, `d` and `alpha` pointing at
-/// `T` values.
-pub type WbFn<R> = unsafe fn(*const R, *mut R, *const i64, i64, *const i64, *const R, bool);
-
 /// [`writeback`] for one full tile with `beta = 0`, its shape `(MV * L) x NR`
-/// fixed at compile time so the loops unroll. Same arithmetic per element, so
-/// bitwise identical. `T` decides the tile format: `Real`, or `Planar` for a
-/// complex `T`.
+/// fixed at compile time. Same arithmetic per element, so bitwise identical.
+/// `T` decides the tile format: `Real`, or `Planar` for a complex `T`. The
+/// store kernels inline it on their accumulators, which then never leave
+/// registers.
 ///
 /// # Safety
 /// As [`writeback`] with `mrem = MV * L`, `nrem = NR`; `rows` must hold `MV * L`
 /// offsets unless `d_rs` is regular, and `cols` `NR`.
+#[inline(always)]
 pub(crate) unsafe fn full_tile<T: Element, const MV: usize, const L: usize, const NR: usize>(
     ab: *const T::Real,
     d: *mut T::Real,

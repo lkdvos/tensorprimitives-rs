@@ -67,7 +67,7 @@
 //! Register blocks are per-microarchitecture, so this is an M3 Max result and
 //! not a NEON one. Re-run the sweep on any other Apple part before quoting it.
 
-use super::{Blocking, ComplexMethod, KernelConfig, PackFormat, TileFormat, Ukr};
+use super::{Blocking, ComplexMethod, KernelConfig, PackFormat, TileFormat, TileStore, Ukr};
 
 use core::arch::aarch64::*;
 

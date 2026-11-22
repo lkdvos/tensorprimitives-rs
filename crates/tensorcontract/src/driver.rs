@@ -118,12 +118,12 @@ use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use std::sync::Barrier;
 
 use crate::buffer::{Panel, Scratch};
-use crate::element::Element;
-use crate::kernel::{config_for_plan, Blocking, KernelSet, UbFn, Ukr};
+use crate::element::{Element, Real};
+use crate::kernel::{config_for_plan, Blocking, KernelSet, StFn, TileStore, UbFn, Ukr};
 use crate::pack::{pack_panel, panel_len};
 use crate::plan::Plan;
 use crate::scatter::IRREGULAR;
-use crate::writeback::{force_gather, scale_only, writeback, WbFn};
+use crate::writeback::{force_gather, scale_only, writeback};
 
 /// A raw pointer shared across the threads of one [`execute`] call.
 ///
@@ -198,8 +198,9 @@ where
     bp: Shared<T::Real>,
     /// Read `B` in place with this kernel instead of packing it.
     ub: Option<UbFn<T::Real>>,
-    /// Write-back for full tiles of the first `K` block when `beta = 0`.
-    wb_full: Option<WbFn<T::Real>>,
+    /// Kernel storing full tiles of the first `K` block to `D` itself, when
+    /// `beta = 0`.
+    st: Option<StFn<T::Real>>,
 }
 
 /// Where one thread sits in the `pm x pn` partition, as far as loop 5 and the
@@ -512,7 +513,7 @@ pub(crate) unsafe fn execute_capped<T>(
         d: Shared(d),
         bp: Shared(bp_ptr),
         ub,
-        wb_full: ukr.wb_full.filter(|_| beta == T::zero() && !force_gather()),
+        st: ukr.func_st.filter(|_| beta == T::zero() && !force_gather()),
     };
 
     if p == 1 {
@@ -681,12 +682,23 @@ unsafe fn run_strip<T>(
         alpha,
         beta,
         ub,
-        wb_full,
+        st,
         ..
     } = *cx;
     let (ptr_a, ptr_b, c, d, bp_ptr) = (cx.a.0, cx.b.0, cx.c.0 as *const T, cx.d.0, cx.bp.0);
     let one = T::one();
     let mut cols = [0isize; MAX_NR];
+    let alpha_parts = {
+        let p = &alpha as *const T as *const T::Real;
+        [
+            *p,
+            if T::IS_COMPLEX {
+                *p.add(1)
+            } else {
+                T::Real::ZERO
+            },
+        ]
+    };
 
     for h in 0..plan.stats.batch {
         let ah = ptr_a.offset(ha[h] as isize);
@@ -791,6 +803,31 @@ unsafe fn run_strip<T>(
                             let i0 = ic + ir;
                             let apan = ap_ptr.add((ir / mr) * a_sliver);
 
+                            let d_rs = *d_m_bs.get_unchecked(i0 / mr);
+                            let full = mrem == mr && nrem == nr;
+                            if let (true, true, Some(f)) = (first_k_block, full, st) {
+                                let (b_arg, cols_arg, koff_arg) = match ub {
+                                    Some(_) => {
+                                        (bh as *const T::Real, cols.as_ptr(), bk.as_ptr().add(pc))
+                                    }
+                                    None => (
+                                        bpan as *const T::Real,
+                                        core::ptr::null(),
+                                        core::ptr::null(),
+                                    ),
+                                };
+                                let ts = TileStore {
+                                    d: dh as *mut T::Real,
+                                    rows: dm.as_ptr().add(i0),
+                                    d_rs,
+                                    cols: dn.as_ptr().add(j0),
+                                    alpha: alpha_parts,
+                                    conj_d: plan.conj_d,
+                                };
+                                f(pc_len, apan, b_arg, cols_arg, koff_arg, conj_b, &ts);
+                                ir += mr;
+                                continue;
+                            }
                             match ub {
                                 Some(f) => f(
                                     pc_len,
@@ -804,19 +841,7 @@ unsafe fn run_strip<T>(
                                 None => (ukr.func)(pc_len, apan, bpan, tile_ptr),
                             }
 
-                            let d_rs = *d_m_bs.get_unchecked(i0 / mr);
-                            let full = mrem == mr && nrem == nr;
-                            if let (true, true, Some(f)) = (first_k_block, full, wb_full) {
-                                f(
-                                    tile_ptr,
-                                    dh as *mut T::Real,
-                                    dm.as_ptr().add(i0),
-                                    d_rs,
-                                    dn.as_ptr().add(j0),
-                                    &alpha as *const T as *const T::Real,
-                                    plan.conj_d,
-                                );
-                            } else if first_k_block {
+                            if first_k_block {
                                 let c_rs = c_m_bs.get(i0 / mr).copied().unwrap_or(IRREGULAR);
                                 writeback::<T>(
                                     tile_ptr,

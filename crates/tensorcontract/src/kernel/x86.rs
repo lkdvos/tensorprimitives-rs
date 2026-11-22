@@ -76,7 +76,7 @@
 //! choice of aspect ratio, so AVX2 register blocks are 2–6x smaller than their
 //! AVX-512 counterparts and are much closer to the register bound.
 
-use super::{Blocking, ComplexMethod, KernelConfig, PackFormat, TileFormat, Ukr};
+use super::{Blocking, ComplexMethod, KernelConfig, PackFormat, TileFormat, TileStore, Ukr};
 
 #[cfg(target_arch = "x86")]
 use core::arch::x86::*;

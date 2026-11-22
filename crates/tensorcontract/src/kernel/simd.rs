@@ -342,6 +342,124 @@ macro_rules! simd_kernels {
                 }
             }
 
+            /// [`real`] (or [`real_ub`] when `UB`) storing the full tile to `D`
+            /// through an inlined [`crate::writeback::full_tile`], so the
+            /// accumulators never leave registers.
+            ///
+            /// # Safety
+            /// As [`real`] / [`real_ub`], plus `full_tile`'s contract for `st`.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn real_st<const MV: usize, const NR: usize, const UB: bool>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                st: &TileStore<$t>,
+            ) {
+                let mr = MV * L;
+                let mut bj = [b; NR];
+                if UB {
+                    for j in 0..NR {
+                        bj[j] = b.offset(*cols.add(j));
+                    }
+                }
+                // B broadcast first, A streamed one vector at a time: with the
+                // store inlined, holding all of A as `real` does spilled
+                // accumulators at `MV * NR + MV = 32` registers.
+                let mut acc = [[$zero(); MV]; NR];
+                for p in 0..kc {
+                    let ap = a.add(p * mr);
+                    let off = if UB { *koff.add(p) as isize } else { 0 };
+                    let bp = b.add(p * NR);
+                    let mut bv = [$zero(); NR];
+                    for j in 0..NR {
+                        bv[j] = $set1(if UB { *bj[j].offset(off) } else { *bp.add(j) });
+                    }
+                    for u in 0..MV {
+                        let av = $load(ap.add(u * L));
+                        for j in 0..NR {
+                            acc[j][u] = $fmadd(av, bv[j], acc[j][u]);
+                        }
+                    }
+                }
+                crate::writeback::full_tile::<$t, MV, L, NR>(
+                    acc.as_ptr() as *const $t,
+                    st.d,
+                    st.rows,
+                    st.d_rs,
+                    st.cols,
+                    st.alpha.as_ptr(),
+                    st.conj_d,
+                );
+            }
+
+            /// [`planar`] (or [`planar_ub`] when `UB`) storing the full tile to
+            /// `D`; see [`real_st`].
+            ///
+            /// # Safety
+            /// As [`real_st`], for complex elements.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn planar_st<const MV: usize, const NR: usize, const UB: bool, const CJ: bool>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                st: &TileStore<$t>,
+            ) {
+                let mr = MV * L;
+                let mut bj = [b; NR];
+                if UB {
+                    for j in 0..NR {
+                        bj[j] = b.offset(2 * *cols.add(j));
+                    }
+                }
+                let mut cr = [[$zero(); MV]; NR];
+                let mut ci = [[$zero(); MV]; NR];
+                for p in 0..kc {
+                    let are = a.add(p * 2 * mr);
+                    let aim = are.add(mr);
+                    let mut ar = [$zero(); MV];
+                    let mut ai = [$zero(); MV];
+                    for u in 0..MV {
+                        ar[u] = $load(are.add(u * L));
+                        ai[u] = $load(aim.add(u * L));
+                    }
+                    let off = if UB { 2 * *koff.add(p) as isize } else { 0 };
+                    let bre = b.add(p * 2 * NR);
+                    for j in 0..NR {
+                        let (br, bi) = if UB {
+                            let q = bj[j].offset(off);
+                            ($set1(*q), $set1(*q.add(1)))
+                        } else {
+                            ($set1(*bre.add(j)), $set1(*bre.add(NR + j)))
+                        };
+                        for u in 0..MV {
+                            cr[j][u] = $fmadd(ar[u], br, cr[j][u]);
+                            if UB && CJ {
+                                cr[j][u] = $fmadd(ai[u], bi, cr[j][u]);
+                                ci[j][u] = $fnmadd(ar[u], bi, ci[j][u]);
+                            } else {
+                                cr[j][u] = $fnmadd(ai[u], bi, cr[j][u]);
+                                ci[j][u] = $fmadd(ar[u], bi, ci[j][u]);
+                            }
+                            ci[j][u] = $fmadd(ai[u], br, ci[j][u]);
+                        }
+                    }
+                }
+                let acc = [cr, ci];
+                crate::writeback::full_tile::<num_complex::Complex<$t>, MV, L, NR>(
+                    acc.as_ptr() as *const $t,
+                    st.d,
+                    st.rows,
+                    st.d_rs,
+                    st.cols,
+                    st.alpha.as_ptr(),
+                    st.conj_d,
+                );
+            }
+
             // ---- plain-fn trampolines ---------------------------------------
             //
             // A `#[target_feature]` function cannot be coerced to a function
@@ -408,6 +526,45 @@ macro_rules! simd_kernels {
                     planar_ub::<MV, NR, true>(kc, a, b, cols, koff, ab)
                 } else {
                     planar_ub::<MV, NR, false>(kc, a, b, cols, koff, ab)
+                }
+            }
+            /// Function-pointer form of [`real_st`], `B` in place iff `cols` is
+            /// non-null.
+            ///
+            /// # Safety
+            /// As [`real_st`], including the target-feature requirement.
+            pub unsafe fn tramp_real_st<const MV: usize, const NR: usize>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                _conj: bool,
+                st: &TileStore<$t>,
+            ) {
+                if cols.is_null() {
+                    real_st::<MV, NR, false>(kc, a, b, cols, koff, st)
+                } else {
+                    real_st::<MV, NR, true>(kc, a, b, cols, koff, st)
+                }
+            }
+            /// Function-pointer form of [`planar_st`]; see [`tramp_real_st`].
+            ///
+            /// # Safety
+            /// As [`planar_st`], including the target-feature requirement.
+            pub unsafe fn tramp_planar_st<const MV: usize, const NR: usize>(
+                kc: usize,
+                a: *const $t,
+                b: *const $t,
+                cols: *const isize,
+                koff: *const i64,
+                conj: bool,
+                st: &TileStore<$t>,
+            ) {
+                match (cols.is_null(), conj) {
+                    (true, _) => planar_st::<MV, NR, false, false>(kc, a, b, cols, koff, st),
+                    (false, false) => planar_st::<MV, NR, true, false>(kc, a, b, cols, koff, st),
+                    (false, true) => planar_st::<MV, NR, true, true>(kc, a, b, cols, koff, st),
                 }
             }
             /// Function-pointer form of [`onem`].
@@ -493,7 +650,7 @@ macro_rules! configs {
                     tile_fmt: TileFormat::Real,
                     func: $m::tramp_real::<MV, NR>,
                     func_ub: Some($m::tramp_real_ub::<MV, NR>),
-                    wb_full: Some(crate::writeback::full_tile::<$t, MV, { $m::L }, NR>),
+                    func_st: Some($m::tramp_real_st::<MV, NR>),
                     name: concat!($isa, "-real"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 1, 1),
@@ -514,7 +671,7 @@ macro_rules! configs {
                     tile_fmt: TileFormat::Planar,
                     func: $m::tramp_planar::<MV, NR>,
                     func_ub: Some($m::tramp_planar_ub::<MV, NR>),
-                    wb_full: Some(crate::writeback::full_tile::<num_complex::Complex<$t>, MV, { $m::L }, NR>),
+                    func_st: Some($m::tramp_planar_st::<MV, NR>),
                     name: concat!($isa, "-planar"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 2, 2),
@@ -537,7 +694,7 @@ macro_rules! configs {
                     tile_fmt: TileFormat::OneM,
                     func: $m::tramp_onem::<MV, NR>,
                     func_ub: None,
-                    wb_full: None,
+                    func_st: None,
                     name: concat!($isa, "-1m"),
                 },
                 // Four reals per complex element in packed A, so the same L2
@@ -560,7 +717,7 @@ macro_rules! configs {
                     tile_fmt: TileFormat::ThreeM,
                     func: $m::tramp_threem::<MV, NR>,
                     func_ub: None,
-                    wb_full: None,
+                    func_st: None,
                     name: concat!($isa, "-3m"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 3, 3),

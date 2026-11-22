@@ -292,6 +292,30 @@ pub enum TileFormat {
 /// sliver element `(j, p)` is `b[cols[j] + koff[p]]` in `Element` units.
 pub type UbFn<T> = unsafe fn(usize, *const T, *const T, *const isize, *const i64, bool, *mut T);
 
+/// Where a store kernel puts its full tile: as [`crate::writeback::full_tile`]
+/// with these arguments. `d` points at `Element`s, `alpha` holds its parts.
+#[derive(Clone, Copy, Debug)]
+pub struct TileStore<R> {
+    /// `D`'s base.
+    pub d: *mut R,
+    /// The tile's row offsets; only the first is read unless `d_rs` is irregular.
+    pub rows: *const i64,
+    /// The rows' common stride, or `IRREGULAR`.
+    pub d_rs: i64,
+    /// The tile's column offsets.
+    pub cols: *const i64,
+    /// `alpha` as `[re, im]` (`im = 0` for a real element).
+    pub alpha: [R; 2],
+    /// Conjugate on store.
+    pub conj_d: bool,
+}
+
+/// A kernel that writes its full tile to `D` from registers:
+/// `(kc, a, b, b_cols, b_koff, conj_b, store)`. `B` is the packed sliver when
+/// `b_cols` is null, else read in place as for [`UbFn`].
+pub type StFn<T> =
+    unsafe fn(usize, *const T, *const T, *const isize, *const i64, bool, &TileStore<T>);
+
 /// A micro-kernel: register-blocked panel-panel product.
 #[derive(Clone, Copy)]
 pub struct Ukr<T> {
@@ -329,9 +353,9 @@ pub struct Ukr<T> {
     /// `func` with `B` read in place instead of from a packed sliver, where
     /// the kernel has one. Must perform the same arithmetic as `func`.
     pub func_ub: Option<UbFn<T>>,
-    /// Write-back of a full tile at this shape with `beta = 0`, where the tile
-    /// format is `Real` or `Planar`.
-    pub wb_full: Option<crate::writeback::WbFn<T>>,
+    /// `func` storing a full tile straight to `D` with `beta = 0`, with
+    /// [`crate::writeback::full_tile`]'s arithmetic.
+    pub func_st: Option<StFn<T>>,
     /// Kernel name, e.g. `"avx512-planar"`. Reported by
     /// [`selected_kernel_name`] and used to label measurements, so a number can
     /// always be traced to the code that produced it.
