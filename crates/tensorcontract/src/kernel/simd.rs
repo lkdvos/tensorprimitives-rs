@@ -358,7 +358,7 @@ macro_rules! simd_kernels {
             }
 
             /// [`real`] (or [`real_ub`] when `UB`) storing the full tile to `D`
-            /// through an inlined [`crate::writeback::full_tile`], so the
+            /// through an inlined `writeback::full_tile`, so the
             /// accumulators never leave registers.
             ///
             /// # Safety

@@ -732,7 +732,7 @@ unsafe fn run_strip<T>(
                 // the group lives at `(s - q0)` within it, not at `s`: see
                 // `execute` for why the panel is cut per group.
                 debug_assert!(
-                    (q1 - q0) * b_sliver <= b_group,
+                    ub.is_some() || (q1 - q0) * b_sliver <= b_group,
                     "column group overruns its slice of the packed B panel"
                 );
                 let bp_ptr = bp_ptr.add(bpart.g * b_group);

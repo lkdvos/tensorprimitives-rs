@@ -305,6 +305,11 @@ pub(crate) unsafe fn scale_only<T: Element>(
 /// As [`writeback`] with `mrem = MV * L`, `nrem = NR`; `rows` must hold `MV * L`
 /// offsets unless `d_rs` is regular, and `cols` `NR`.
 #[inline(always)]
+// Only the SIMD store kernels call it.
+#[cfg_attr(
+    not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")),
+    allow(dead_code)
+)]
 pub(crate) unsafe fn full_tile<T: Element, const MV: usize, const L: usize, const NR: usize>(
     ab: *const T::Real,
     d: *mut T::Real,

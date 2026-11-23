@@ -292,7 +292,7 @@ pub enum TileFormat {
 /// sliver element `(j, p)` is `b[cols[j] + koff[p]]` in `Element` units.
 pub type UbFn<T> = unsafe fn(usize, *const T, *const T, *const isize, *const i64, bool, *mut T);
 
-/// Where a store kernel puts its full tile: as [`crate::writeback::full_tile`]
+/// Where a store kernel puts its full tile: as `writeback::full_tile`
 /// with these arguments. `d` points at `Element`s, `alpha` holds its parts.
 #[derive(Clone, Copy, Debug)]
 pub struct TileStore<R> {
@@ -354,7 +354,7 @@ pub struct Ukr<T> {
     /// the kernel has one. Must perform the same arithmetic as `func`.
     pub func_ub: Option<UbFn<T>>,
     /// `func` storing a full tile straight to `D` with `beta = 0`, with
-    /// [`crate::writeback::full_tile`]'s arithmetic.
+    /// `writeback::full_tile`'s arithmetic.
     pub func_st: Option<StFn<T>>,
     /// Kernel name, e.g. `"avx512-planar"`. Reported by
     /// [`selected_kernel_name`] and used to label measurements, so a number can
@@ -635,15 +635,9 @@ fn env_blocking() -> Option<BlockingOverride> {
 
 /// One `usize`-valued environment variable, or `None` if unset or unparseable.
 /// Not cached; use `env_once!` on hot paths.
-fn env_usize(_key: &str) -> Option<usize> {
-    #[cfg(feature = "std")]
-    {
-        std::env::var(_key).ok().and_then(|v| v.parse().ok())
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        None
-    }
+#[cfg(feature = "std")]
+fn env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok().and_then(|v| v.parse().ok())
 }
 
 /// Real scalar types for which the engine has a micro-kernel.
