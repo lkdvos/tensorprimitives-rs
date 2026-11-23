@@ -333,6 +333,7 @@ pub mod batch;
 mod buffer;
 mod direct;
 mod driver;
+mod kdot;
 mod pack;
 #[cfg(feature = "std")]
 mod plan_cache;

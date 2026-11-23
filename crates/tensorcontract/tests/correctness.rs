@@ -1510,8 +1510,81 @@ fn direct_path_matches_the_oracle() {
     sweep::<Complex<f32>>(0xD4, true);
 }
 
-/// Shapes that miss the direct path and fit one `MC` block, so `B` is read in
-/// place; rerun with `MC = MR`, which packs `B`, they must agree bitwise.
+/// Small gathered extent, deep or unit-stride `K`: the `K`-vectorised path.
+/// Covers both operands as the streamed one, every conjugation, `beta`, batch,
+/// `K` tails and several `K` blocks.
+#[test]
+fn kdot_matches_the_oracle() {
+    fn sweep<T>(seed: u64, complex: bool)
+    where
+        T: Element,
+        T::Real: KernelSet,
+    {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let (m, n, k, h) = (1i64, 2i64, 3i64, 4i64);
+        let shapes = [
+            (1, 37, 300, 1),
+            (2, 13, 67, 1),
+            (3, 5, 1001, 2),
+            (8, 9, 4099, 1),
+            (1, 1, 16, 1),
+            (4, 600, 33, 1),
+            (1, 6, 9000, 1),
+        ];
+        for (sm, sn, sk, sh) in shapes {
+            for trial in 0..8u32 {
+                let batched = sh > 1;
+                let with_h = |v: Vec<i64>| -> Vec<i64> {
+                    if batched {
+                        v.into_iter().chain([h]).collect()
+                    } else {
+                        v
+                    }
+                };
+                let e = |idx: &[i64]| -> Vec<i64> {
+                    idx.iter()
+                        .map(|&l| [sm, sn, sk, sh][(l - 1) as usize])
+                        .collect()
+                };
+                // Odd trials stream `A` (`K`-major `A`, `M`-major `B`).
+                let (idx_a, idx_b) = if trial % 2 == 1 {
+                    (with_h(vec![k, n]), with_h(vec![m, k]))
+                } else {
+                    (with_h(vec![m, k]), with_h(vec![k, n]))
+                };
+                let idx_d = with_h(vec![m, n]);
+                let p = Problem {
+                    la: Layout::col_major(&e(&idx_a)),
+                    lb: Layout::col_major(&e(&idx_b)),
+                    lc: Layout::col_major(&e(&idx_d)),
+                    ld: random_layout(&e(&idx_d), &mut rng),
+                    conj_a: complex && trial & 2 != 0,
+                    conj_b: complex && trial & 4 != 0,
+                    conj_c: complex && trial == 6,
+                    conj_d: complex && trial == 7,
+                    use_c: trial % 3 == 0,
+                    idx_c: idx_d.clone(),
+                    idx_a,
+                    idx_b,
+                    idx_d,
+                };
+                let err = check_problem::<T>(&p, &mut rng, None, ComplexMethod::Planar);
+                assert!(
+                    err <= tol::<T>(ComplexMethod::Planar),
+                    "shape {:?} trial {trial}: relative error {err:e}\n{p}",
+                    (sm, sn, sk, sh)
+                );
+            }
+        }
+    }
+    sweep::<f64>(0xE1, false);
+    sweep::<f32>(0xE2, false);
+    sweep::<Complex<f64>>(0xE3, true);
+    sweep::<Complex<f32>>(0xE4, true);
+}
+
+/// Shapes whose `M` spans at most two row slivers, so `B` is read in place;
+/// rerun with `B`'s strides doubled, which packs it, they must agree bitwise.
 #[test]
 fn unpacked_b_matches_packed_b_and_the_oracle() {
     fn sweep<T>(seed: u64, complex: bool)
@@ -1601,9 +1674,42 @@ fn unpacked_b_matches_packed_b_and_the_oracle() {
                     },
                 )
                 .expect("plan");
-                let (mr, _, blk) = tensorcontract::kernel::plan_config::<T>(&plan);
-                let packed = plan.clone().with_blocking(Blocking { mc: mr, ..blk });
-                let run = |pl: &Plan| {
+                // `B` with every stride doubled holds the same values but no
+                // unit-stride `K` axis, so it is packed; the arithmetic is
+                // otherwise the same, hence bitwise equal. Both arms take the
+                // five-loop nest (an explicit blocking rules out the other paths).
+                let lb2 = Layout::new(
+                    p.lb.extents().to_vec(),
+                    p.lb.strides().iter().map(|s| 2 * s).collect(),
+                )
+                .expect("layout");
+                let mut b2 = vec![T::zero(); 2 * b.len()];
+                for (i, &v) in b.iter().enumerate() {
+                    b2[2 * i] = v;
+                }
+                let (_, _, blk) = tensorcontract::kernel::plan_config::<T>(&plan);
+                let plan = plan.with_blocking(blk);
+                let packed = Plan::new(
+                    Operand {
+                        layout: &p.la,
+                        idx: &p.idx_a,
+                        op: op(p.conj_a),
+                    },
+                    Operand {
+                        layout: &lb2,
+                        idx: &p.idx_b,
+                        op: op(p.conj_b),
+                    },
+                    None,
+                    Operand {
+                        layout: &p.ld,
+                        idx: &p.idx_d,
+                        op: op(p.conj_d),
+                    },
+                )
+                .expect("plan")
+                .with_blocking(blk);
+                let run = |pl: &Plan, b: &[T]| {
                     let mut d = vec![T::zero(); p.ld.storage_len() as usize];
                     unsafe {
                         pl.run_raw::<T>(
@@ -1618,7 +1724,7 @@ fn unpacked_b_matches_packed_b_and_the_oracle() {
                     d
                 };
                 assert!(
-                    run(&plan) == run(&packed),
+                    run(&plan, &b) == run(&packed, &b2),
                     "shape {:?} trial {trial}: in-place B differs from packed B\n{p}",
                     (sm, sn, sk, sh)
                 );

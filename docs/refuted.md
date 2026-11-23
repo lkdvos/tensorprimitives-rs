@@ -1195,3 +1195,21 @@ outside the repo.
 
 **What would reopen it.** A kernel that loads `B` pairs or vectors rather than
 scalars (fewer lines per step), or a machine where the L1 is more associative.
+
+## Two row slivers read `B` in place at any depth (part 28)
+
+**Expected / what happened.** D68 was fitted at `k <= 256` and took no account
+of depth. With two `f64` slivers, packing `B` won from `k = 3072` (0.67–0.87 of
+the in-place time) and by 1.45x at `m = 32`, `k = 32768`. In-place still wins to
+`k = 2048`, with one sliver at any depth, and for complex at every depth
+(1.16–1.29), so the rule kept those and bounds only real `K` (D74). At
+power-of-two `k` with a tail sliver packing also wins (~0.85) below the bound; not
+special-cased.
+
+**Confidence.** `measured once`, Apple M5, interleaved arms, two rounds.
+
+**Evidence.** notebook `small-contractions.md` part 28;
+`bench-results/ldevos-616-m5/cross-engine/ubench/` (`ubp`).
+
+**What would reopen it.** A kernel that loads `B` as vectors rather than
+scalars, or a machine with a different L1/L2 balance.

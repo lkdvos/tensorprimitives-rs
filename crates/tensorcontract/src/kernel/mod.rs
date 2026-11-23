@@ -316,6 +316,15 @@ pub struct TileStore<R> {
 pub type StFn<T> =
     unsafe fn(usize, *const T, *const T, *const isize, *const i64, bool, &TileStore<T>);
 
+/// Streamed rows per [`DotFn`] call.
+pub const DOT_NB: usize = 4;
+
+/// `DOT_NB` dot products along `K`, vectorised along `K`:
+/// `(lr, s, g, gs, out)`. `s` points at `DOT_NB` row pointers, each `lr` reals;
+/// `out` receives `(re, im)` per row. Complex kernels read interleaved reals and
+/// take `gs`, `g` with each pair swapped; real kernels ignore it.
+pub type DotFn<T> = unsafe fn(usize, *const *const T, *const T, *const T, *mut T);
+
 /// A micro-kernel: register-blocked panel-panel product.
 #[derive(Clone, Copy)]
 pub struct Ukr<T> {
@@ -356,6 +365,8 @@ pub struct Ukr<T> {
     /// `func` storing a full tile straight to `D` with `beta = 0`, with
     /// `writeback::full_tile`'s arithmetic.
     pub func_st: Option<StFn<T>>,
+    /// The `K`-vectorised dot kernel for the `kdot` path, if this ISA has one.
+    pub func_dot: Option<DotFn<T>>,
     /// Kernel name, e.g. `"avx512-planar"`. Reported by
     /// [`selected_kernel_name`] and used to label measurements, so a number can
     /// always be traced to the code that produced it.

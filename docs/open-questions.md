@@ -119,6 +119,16 @@ cluster-shared 16 MiB L2 to one thread, a 6x over-allocation).
 
 ## 6. Smaller, and each needing a machine
 
+* **Apple SME.** tenferro-rs's GEMM reaches ~310 GF/s `f64` on one M5 core
+  through the SME matrix unit, 4–5x NEON (part 28). A documented Armv9
+  extension, so a kernel target here rather than an off-ISA comparison (unlike
+  AMX, D55); it wants a streaming-mode micro-kernel and a size gate.
+* **The dot path's leftovers** (part 28): a 2-row register block for `gn = 5..8`
+  (`f64` `8 x 8` over `K = 512` is still 2.4x behind tenferro-rs); reordering `K`
+  by the streamed operand's strides, so a `K` axis contiguous only as a set
+  qualifies (QuasiStrided.jl is 4.6x ahead on `contract_scrambled`); and
+  threading, since the path is serial and a very large `M = 1` contraction no
+  longer uses `THREADS`.
 * **Re-measure `f64` on NEON.** The default `16 x 3` kernel spilled until part 27
   (0.78–0.94 of the time end to end at `k > KC` after the fix); every `f64`
   NEON corpus and TBLIS number predates it. `f32` `32 x 3` jumped 1.6–2x in

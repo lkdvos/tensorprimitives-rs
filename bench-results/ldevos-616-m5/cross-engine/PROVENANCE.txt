@@ -1,0 +1,28 @@
+Apple M5, macOS (Darwin 27.2.0), single thread, unpinned, 2026-11-23.
+
+Cross-engine round (notebook small-contractions.md part 28).
+cases.txt: 162 contractions from harness/gen_cases.py -- the TensorOperations.jl
+benchmark suite's synthetic :contract shapes and layouts (d = 4..32, f64/c64),
+tenferro-rs's pairwise_contraction MPS cases (c64, chi 4..128), and the three
+pairwise steps of an MPS one-site effective Hamiltonian (D 16..128).
+Column-major, identical deterministic inputs in every engine; the checksum
+column agrees across engines on every case.
+
+Engines (one process per engine and round, rounds alternated):
+  tp   tensorcontract::contract (plan cache), harness/xbench.rs
+  tfc  tenferro-rs 7724691, CpuEngine::serial, dot_general_with_conj_cached
+  tf   the same, uncached dot_general_with_conj (allocates its output)
+  tfn  tfc with Apple SME disabled (t4a-gemm-common patched so the SME probe
+       returns false); the NEON-only comparison
+  qs   QuasiStrided.jl 22c2ab4, contract! per call, Julia 1.13.3 -t1,
+       harness/xbench.jl
+Timing: batches of ~1 ms, median of 15 per case; per case the minimum over
+three rounds.
+
+raw/before-*: tp at af55c69 against all engines.
+raw/ab-{off,on}_*: tp only, interleaved, the change of part 28 off and on.
+  The on arm predates the k <= 2 KC guard on the deepened kc; the guard returns
+  the old blocking, so the cases it covers run the off arm's code.
+ubench/{off,on}_*: harness/ubench.rs reused-plan families (gate, gemm, wb,
+  deep, kc, dot, ubp), two interleaved arm pairs; score with
+  harness/ab2.py "ubench/off_*" "ubench/on_*".

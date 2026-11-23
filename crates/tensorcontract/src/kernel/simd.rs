@@ -521,6 +521,122 @@ macro_rules! simd_kernels {
             ) {
                 planar::<MV, NR>(kc, a, b, ab)
             }
+            /// `DOT_NB` real dot products of length `lr`: `out[2j] = sum_t
+            /// s[j][t] * g[t]`, `out[2j+1] = 0`. Two vectors per step, so eight
+            /// independent accumulator chains.
+            ///
+            /// # Safety
+            /// The CPU must support this module's target features. Each `s[j]`
+            /// and `g` must be valid for `lr` reads, `out` for `2*DOT_NB` writes.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn dot_real(
+                lr: usize,
+                s: *const *const $t,
+                g: *const $t,
+                _gs: *const $t,
+                out: *mut $t,
+            ) {
+                const NB: usize = crate::kernel::DOT_NB;
+                let s: [*const $t; NB] = core::array::from_fn(|j| *s.add(j));
+                let mut a0 = [$zero(); NB];
+                let mut a1 = [$zero(); NB];
+                let main = lr / (2 * L) * (2 * L);
+                let mut t = 0;
+                while t < main {
+                    let g0 = $load(g.add(t));
+                    let g1 = $load(g.add(t + L));
+                    for j in 0..NB {
+                        a0[j] = $fmadd($load(s[j].add(t)), g0, a0[j]);
+                        a1[j] = $fmadd($load(s[j].add(t + L)), g1, a1[j]);
+                    }
+                    t += 2 * L;
+                }
+                let mut b0 = [<$t as crate::element::Real>::ZERO; L];
+                let mut b1 = [<$t as crate::element::Real>::ZERO; L];
+                for j in 0..NB {
+                    $store(b0.as_mut_ptr(), a0[j]);
+                    $store(b1.as_mut_ptr(), a1[j]);
+                    let mut sum = <$t as crate::element::Real>::ZERO;
+                    for l in 0..L {
+                        sum += b0[l] + b1[l];
+                    }
+                    for q in main..lr {
+                        sum = crate::element::Real::mul_add(*s[j].add(q), *g.add(q), sum);
+                    }
+                    *out.add(2 * j) = sum;
+                    *out.add(2 * j + 1) = <$t as crate::element::Real>::ZERO;
+                }
+            }
+
+            /// `DOT_NB` complex dot products over `lr` interleaved reals.
+            /// `P1 += s .* g` gives the real part as the alternating lane sum,
+            /// `P2 += s .* gs` (`gs` is `g` pair-swapped) the imaginary part, so
+            /// no shuffle in the loop.
+            ///
+            /// # Safety
+            /// As [`dot_real`]; `gs` must also be valid for `lr` reads, and `lr`
+            /// must be even.
+            $(#[target_feature(enable = $feat)])+
+            pub unsafe fn dot_cplx(
+                lr: usize,
+                s: *const *const $t,
+                g: *const $t,
+                gs: *const $t,
+                out: *mut $t,
+            ) {
+                const NB: usize = crate::kernel::DOT_NB;
+                let s: [*const $t; NB] = core::array::from_fn(|j| *s.add(j));
+                let mut p1 = [$zero(); NB];
+                let mut p2 = [$zero(); NB];
+                let main = lr / L * L;
+                let mut t = 0;
+                while t < main {
+                    let gv = $load(g.add(t));
+                    let gw = $load(gs.add(t));
+                    for j in 0..NB {
+                        let sv = $load(s[j].add(t));
+                        p1[j] = $fmadd(sv, gv, p1[j]);
+                        p2[j] = $fmadd(sv, gw, p2[j]);
+                    }
+                    t += L;
+                }
+                let mut b1 = [<$t as crate::element::Real>::ZERO; L];
+                let mut b2 = [<$t as crate::element::Real>::ZERO; L];
+                for j in 0..NB {
+                    $store(b1.as_mut_ptr(), p1[j]);
+                    $store(b2.as_mut_ptr(), p2[j]);
+                    let (mut re, mut im) = (<$t as crate::element::Real>::ZERO, <$t as crate::element::Real>::ZERO);
+                    for l in (0..L).step_by(2) {
+                        re += b1[l] - b1[l + 1];
+                        im += b2[l] + b2[l + 1];
+                    }
+                    // `main` is a multiple of `L` (even): lane parity is element parity.
+                    for q in (main..lr).step_by(2) {
+                        let (sr, si) = (*s[j].add(q), *s[j].add(q + 1));
+                        re = crate::element::Real::mul_add(sr, *g.add(q), re);
+                        re = crate::element::Real::mul_add(-si, *g.add(q + 1), re);
+                        im = crate::element::Real::mul_add(sr, *gs.add(q), im);
+                        im = crate::element::Real::mul_add(si, *gs.add(q + 1), im);
+                    }
+                    *out.add(2 * j) = re;
+                    *out.add(2 * j + 1) = im;
+                }
+            }
+
+            /// Function-pointer form of [`dot_real`].
+            ///
+            /// # Safety
+            /// As [`dot_real`], including the target-feature requirement.
+            pub unsafe fn tramp_dot_real(lr: usize, s: *const *const $t, g: *const $t, gs: *const $t, out: *mut $t) {
+                dot_real(lr, s, g, gs, out)
+            }
+            /// Function-pointer form of [`dot_cplx`].
+            ///
+            /// # Safety
+            /// As [`dot_cplx`], including the target-feature requirement.
+            pub unsafe fn tramp_dot_cplx(lr: usize, s: *const *const $t, g: *const $t, gs: *const $t, out: *mut $t) {
+                dot_cplx(lr, s, g, gs, out)
+            }
             /// Function-pointer form of [`real_ub`].
             ///
             /// # Safety
@@ -678,6 +794,7 @@ macro_rules! configs {
                     func: $m::tramp_real::<MV, NR>,
                     func_ub: Some($m::tramp_real_ub::<MV, NR>),
                     func_st: Some($m::tramp_real_st::<MV, NR>),
+                    func_dot: Some($m::tramp_dot_real),
                     name: concat!($isa, "-real"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 1, 1),
@@ -699,6 +816,7 @@ macro_rules! configs {
                     func: $m::tramp_planar::<MV, NR>,
                     func_ub: Some($m::tramp_planar_ub::<MV, NR>),
                     func_st: Some($m::tramp_planar_st::<MV, NR>),
+                    func_dot: Some($m::tramp_dot_cplx),
                     name: concat!($isa, "-planar"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 2, 2),
@@ -722,6 +840,7 @@ macro_rules! configs {
                     func: $m::tramp_onem::<MV, NR>,
                     func_ub: None,
                     func_st: None,
+                    func_dot: Some($m::tramp_dot_cplx),
                     name: concat!($isa, "-1m"),
                 },
                 // Four reals per complex element in packed A, so the same L2
@@ -745,6 +864,7 @@ macro_rules! configs {
                     func: $m::tramp_threem::<MV, NR>,
                     func_ub: None,
                     func_st: None,
+                    func_dot: Some($m::tramp_dot_cplx),
                     name: concat!($isa, "-3m"),
                 },
                 blk: Blocking::derive(core::mem::size_of::<$t>(), 3, 3),

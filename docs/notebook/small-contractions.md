@@ -288,3 +288,86 @@ blocks after the first, and edge tiles: col-major GEMMs with `k` 300..2048 run
 in **0.78–0.94** of the time (geomean 0.851); shapes that only use the store
 kernel are unchanged (0.98–1.03). Every `f64` NEON number recorded before this
 part (`apple-silicon.md`, `results.md` §7) was measured with the spilling kernel.
+
+### Part 28: against tenferro-rs and QuasiStrided.jl; dot products along `K`
+
+Same machine, 2026-11-23. A common case list
+(`bench-results/ldevos-616-m5/cross-engine/`): the TensorOperations.jl suite's
+synthetic `:contract` shapes in all their layouts (`d` = 4..32), tenferro-rs's
+own `pairwise_contraction` MPS cases, and the pairwise steps of an MPS one-site
+effective Hamiltonian; one thread, identical inputs, checksums equal across
+engines.
+
+**tenferro-rs's GEMM uses Apple SME.** Its `t4a-gemm` hands large shapes to the
+SME matrix unit, ~310 GF/s on one core for a `1024^3` `f64` GEMM against NEON's
+~70, so it was 3–5x ahead on large GEMM-shaped cases. With the SME probe
+patched off it was level with this engine there. SME is a documented Armv9
+extension, unlike the AMX that Accelerate reaches (D55), so this is a target, not
+an off-ISA artefact; open in `open-questions.md`. The comparison below is NEON
+against NEON.
+
+Before this part (other engine's time over this engine's, geomean): tenferro
+1.22, QuasiStrided 1.49 — but two families lost to both by 2–4x:
+
+* **One side has no free index** (`C[xyz] = A[kl] B[klxyz]`, `M = 1`): the
+  16-row `f64` tile was 1/16 full and `B` was packed `M`-major; 0.21–0.37.
+* **Small `M` and `N`, deep `K`** (`8 x 8` over `K = 512`, `16 x 16` over 4096):
+  0.30–0.65.
+
+Three changes, measured with runtime switches against the old paths:
+
+**1. `kdot.rs`, dot products along `K` (D72).** When one operand ("streamed") has
+a unit-stride `K` axis, the other is gathered `K`-major one block at a time, and
+each output is a dot product vectorised along `K`, reduced once per block —
+QuasiStrided.jl's dot path, generalised from `M = 1` to a small gathered extent.
+The kernel is a new `simd_kernels!` member (`dot_real`, `dot_cplx`) so it gets
+`fmla` and the ISA dispatch; complex keeps a pair-swapped copy of the gathered
+row so `re` and `im` are two FMAs per vector with no shuffle. A first portable
+version left the complex loop half scalar and lost 2.3–3.6x on deep-`K`
+complex; with the SIMD kernel it lost 1.3–1.7x there, so complex is confined to
+`gn <= 3`, where the 4-row planar tile is itself mostly padding. Fitted against
+both the packed and the direct paths: real `gn <= 4` from `k = 16`, `gn <= 8`
+from `k = 64`; complex `gn = 1` from `k = 16`, `gn <= 3` from `k = 32`. It runs
+before `direct`, which it beat wherever the rule selects both (0.43–0.89 at
+`k = 16..32`); the MPS gate's streamed operand has a strided `K`, so
+the gate never takes it. Over the old paths: `M = 1` 0.20–0.34 at `k >= 64`;
+real `gn = 4` 0.26–0.60; `gn = 8` 0.41–0.95; complex `gn = 2..3` 0.36–0.70.
+
+**2. A deeper `kc` when all of `M` fits one `A` block (D73).** At small `M x N`
+each `pc` pass re-enters every tile and writes it back, about as costly as the
+pass's FMAs. `kc` now grows to `min(k, A_BUDGET / (m * reals))`, `mc`/`nc`
+re-derived at that depth. `f64` `m = 16..32`: 0.47–0.69 from `k = 2048`, even at
+`n = 4096`; complex 0.72–1.0. At `k = 512` (two passes) it lost up to 9.5% on small
+`m`, so it applies only past `2 KC`.
+
+**3. Two real row slivers pack `B` once `K` is deep (D74).** D68's in-place `B`
+was fitted at `k <= 256`. At `m = 32`, `k = 32768` in-place lost 1.45x to
+packing; sweeping `m` = 20..32 and `k` up to 32768: in-place wins 1.05–1.36x to
+`k = 2048` (except at power-of-two `k` with a tail sliver, 0.85, a set-conflict
+pattern left alone), packing wins 0.67–0.87 from `k = 3072` (`m = 32` ties at
+3072). Complex in-place won
+at every depth (1.16–1.29), so only real types changed. One sliver keeps
+in-place (`16 x 16` over 4096: 0.70 of packed).
+
+**Results** (interleaved, three rounds, all three on against all off):
+the cross-engine case list geomean **0.943**, worst 1.04 (noise: `d = 4` outer
+products, spread 6%). `M = 1` cases **0.19–0.25**, `d = 4` 0.49–0.56; deep-`K`
+`f64` 0.58–0.73, `c64` 0.92–0.97. Reused-plan families: gate, GEMM, `B^T` GEMM
+and write-back grids 0.997–1.003 geomean; `kc` grid `f64` 0.725, `c64` 0.963 (measured before the `2 KC` guard, which
+returns the old blocking for the cases it covers).
+
+Against the other engines afterwards: tenferro (NEON) **1.30**, worst case
+0.41 (was 0.24); QuasiStrided 1.58. Still behind:
+
+* `f64` `8 x 8` over `K = 512` (`131` at `d = 8`): tenferro 0.41. `kdot` takes it
+  at `gn = 8` but its kernel reloads the gathered row per four outputs; a 2-row
+  register block would halve the loads.
+* `C[xyz] = A[kl] B[lkxyz]` (`contract_scrambled`): QuasiStrided 0.21. `B`'s `K`
+  axes are contiguous as a set but not in the plan's `K` order, so `kdot` does
+  not see a unit-stride `K`; reordering `K` by the streamed operand's strides
+  would admit it.
+* Tiny complex GEMMs (`4 x 16 x 16`): tenferro 0.69.
+
+`kdot` runs serially whatever the thread count, so the choice does not depend on
+`THREADS` and results stay bitwise identical across thread counts; a very large
+`M = 1` contraction no longer threads.

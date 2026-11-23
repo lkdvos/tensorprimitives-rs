@@ -387,3 +387,12 @@ arms: 57.5 → 62.1 GF/s at `kc = 16`, within the floor at depth, and no longer
 unstable. End to end, `f64` col-major `k` 300..2048: **0.78–0.94** (geomean
 0.851). Data: `bench-results/ldevos-616-m5/kernel-order/`. The `f64` NEON
 numbers elsewhere in this file predate the fix.
+
+**Against tenferro-rs and QuasiStrided.jl; dot path, deeper `kc` (part 28,
+D72–D74).** 162 shared cases, one thread, other engine's time over this one's
+(geomean): before, tenferro-rs (NEON only — its default GEMM uses Apple SME,
+3–5x ahead on large GEMM shapes) 1.22, QuasiStrided.jl 1.49, with an `M = 1` and
+a deep-`K` family 2–4x behind both. After, all three changes against none,
+interleaved: **0.943** geomean, `M = 1` **0.19–0.25**, deep-`K` `f64` 0.58–0.73,
+worst 1.04; other grids 0.997–1.003. tenferro-rs 1.30 (worst case 0.41, was
+0.24), QuasiStrided.jl 1.58. Data: `bench-results/ldevos-616-m5/cross-engine/`.

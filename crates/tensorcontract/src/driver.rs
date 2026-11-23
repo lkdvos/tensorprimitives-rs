@@ -318,6 +318,12 @@ pub(crate) unsafe fn execute_capped<T>(
         return;
     }
 
+    // Before `direct`, which it beats wherever both apply.
+    if crate::kdot::use_kdot::<T>(plan) {
+        // SAFETY: forwarded unchanged; `use_kdot` established its precondition.
+        unsafe { crate::kdot::execute(plan, alpha, a, b, beta, c, d) };
+        return;
+    }
     // Before the kernel config lookup, which is itself visible at these sizes.
     if crate::direct::use_direct(plan) {
         // SAFETY: forwarded unchanged; `use_direct` established its precondition.
@@ -417,7 +423,10 @@ pub(crate) unsafe fn execute_capped<T>(
     // visible, because `MC` has a second constraint this model omits — the
     // strip of `D` that one `jr` pass revisits. See the Phase 4 report; this is
     // what the `MC`/`KC`/`NC` sweep has to settle.
-    let Blocking { mc, kc, nc } = cfg.blk;
+    let Blocking { mc, kc, nc } = match plan.blocking {
+        None => deep_k(cfg.blk, &ukr, m, k, core::mem::size_of::<T::Real>()),
+        Some(_) => cfg.blk,
+    };
     let mc = mc.min(m.next_multiple_of(mr));
     let nc = nc.min(n.next_multiple_of(nr));
 
@@ -457,7 +466,7 @@ pub(crate) unsafe fn execute_capped<T>(
     let group_cap = nc.div_ceil(nr).div_ceil(pn);
     let ub = ukr
         .func_ub
-        .filter(|_| nr <= MAX_NR && unpacked_b(npanels, bk));
+        .filter(|_| nr <= MAX_NR && unpacked_b(npanels, bk, T::IS_COMPLEX));
     let b_group = if ub.is_some() {
         0
     } else {
@@ -900,16 +909,42 @@ unsafe fn run_strip<T>(
     }
 }
 
+/// Deepen `kc` towards the whole of `K`, as far as the `A` block budget allows
+/// for all of `M`: each `pc` pass re-enters every tile and writes it back, which
+/// at small `M x N` costs as much as the pass's arithmetic. Only past two
+/// default passes; at `k <= 2 KC` it lost up to 9% (M5).
+fn deep_k<R>(blk: Blocking, ukr: &Ukr<R>, m: usize, k: usize, rb: usize) -> Blocking {
+    if k <= 2 * blk.kc {
+        return blk;
+    }
+    let a_reals = ukr.a_per_k / ukr.mr;
+    let b_reals = (ukr.b_per_k / ukr.nr).max(1);
+    let row = m.next_multiple_of(ukr.mr) * a_reals * rb;
+    let kc = (A_BUDGET / row).min(k);
+    if kc <= blk.kc {
+        return blk;
+    }
+    Blocking::derive_at_depth(rb, a_reals, b_reals, kc)
+}
+
+/// The `A` block budget of [`Blocking::derive_at_depth`].
+const A_BUDGET: usize = 512 * 1024;
+
 /// Bound on `NR` for the in-place column table.
 const MAX_NR: usize = 32;
 
 /// Most row slivers for which reading `B` in place beat packing it (M5).
 const MAX_UB_PANELS: usize = 2;
 
+/// Deepest real `K` at which two row slivers still read `B` in place (M5).
+const MAX_UB2_REAL_K: usize = 2048;
+
 /// Read `B` in place when few row slivers would reuse a packed panel and `B`'s
 /// `K` axis is unit-stride. A strided `K` axis puts every `K` step of a sliver
 /// on its own cache line (with a power-of-two stride, in one L1 set), which was
-/// measured up to 1.7x slower than packing.
-fn unpacked_b(npanels: usize, bk: &[i64]) -> bool {
-    npanels <= MAX_UB_PANELS && bk.windows(2).all(|w| w[1] - w[0] == 1)
+/// measured up to 1.7x slower than packing. With two real slivers and a deep
+/// `K`, packing won by up to 1.5x; complex never lost.
+fn unpacked_b(npanels: usize, bk: &[i64], complex: bool) -> bool {
+    let depth_ok = npanels <= 1 || complex || bk.len() <= MAX_UB2_REAL_K;
+    npanels <= MAX_UB_PANELS && depth_ok && bk.windows(2).all(|w| w[1] - w[0] == 1)
 }
