@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # 1.89 stabilised the AVX-512 intrinsics and `is_x86_feature_detected!` (D20).
 # CI pins exactly this version, so the floor cannot drift in either direction.
@@ -26,7 +26,7 @@ authors = ["Lukas Devos <ldevos@flatironinstitute.org>"]
 
 [workspace.dependencies]
 num-complex = { version = "0.4", default-features = false, features = ["std"] }
-tensorcontract = { path = "crates/tensorcontract", version = "0.1.0" }
+tensorcontract = { path = "crates/tensorcontract", version = "0.1.1" }
 
 [profile.release]
 opt-level = 3

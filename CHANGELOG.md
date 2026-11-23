@@ -11,7 +11,7 @@ The two crates share a version. `tensorprimitives-bench` is not published.
 enforces. It is deliberately not Keep a Changelog: the *Confidence* section is
 the part a prospective dependant most needs, and it has no KaC category.
 
-## 0.1.1 — unreleased
+## 0.1.1 — 2026-11-23
 
 ### Changed
 
