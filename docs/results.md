@@ -395,4 +395,6 @@ D72–D74).** 162 shared cases, one thread, other engine's time over this one's
 a deep-`K` family 2–4x behind both. After, all three changes against none,
 interleaved: **0.943** geomean, `M = 1` **0.19–0.25**, deep-`K` `f64` 0.58–0.73,
 worst 1.04; other grids 0.997–1.003. tenferro-rs 1.30 (worst case 0.41, was
-0.24), QuasiStrided.jl 1.58. Data: `bench-results/ldevos-616-m5/cross-engine/`.
+0.24), QuasiStrided.jl 1.58. Data: `bench-results/ldevos-616-m5/cross-engine/`. Sorting `K` by `B` when only that order makes it unit-stride (D75) then
+took the `contract_scrambled` cases to 0.19–0.22: tenferro-rs 1.37, QuasiStrided.jl
+1.67 (worst case 0.86, was 0.21).

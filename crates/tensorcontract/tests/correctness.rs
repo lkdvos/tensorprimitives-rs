@@ -1577,6 +1577,41 @@ fn kdot_matches_the_oracle() {
             }
         }
     }
+    // `B`'s two `K` axes contiguous only in the reverse of `A`'s order, so the
+    // plan sorts `K` by `B` (`C[m,n] = A[m,k1,k2] B[k2,k1,n]`).
+    fn scrambled<T>(seed: u64, complex: bool)
+    where
+        T: Element,
+        T::Real: KernelSet,
+    {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        for (sm, s1, s2, sn) in [(1i64, 8i64, 16i64, 40i64), (3, 5, 33, 7), (1, 64, 64, 9)] {
+            for trial in 0..4u32 {
+                let p = Problem {
+                    la: Layout::col_major(&[sm, s1, s2]),
+                    lb: Layout::col_major(&[s2, s1, sn]),
+                    lc: Layout::col_major(&[sm, sn]),
+                    ld: Layout::col_major(&[sm, sn]),
+                    conj_a: complex && trial & 1 != 0,
+                    conj_b: complex && trial & 2 != 0,
+                    conj_c: false,
+                    conj_d: false,
+                    use_c: trial == 3,
+                    idx_a: vec![1, 3, 4],
+                    idx_b: vec![4, 3, 2],
+                    idx_c: vec![1, 2],
+                    idx_d: vec![1, 2],
+                };
+                let err = check_problem::<T>(&p, &mut rng, None, ComplexMethod::Planar);
+                assert!(
+                    err <= tol::<T>(ComplexMethod::Planar),
+                    "trial {trial}: {err:e}\n{p}"
+                );
+            }
+        }
+    }
+    scrambled::<f64>(0xE5, false);
+    scrambled::<Complex<f64>>(0xE6, true);
     sweep::<f64>(0xE1, false);
     sweep::<f32>(0xE2, false);
     sweep::<Complex<f64>>(0xE3, true);

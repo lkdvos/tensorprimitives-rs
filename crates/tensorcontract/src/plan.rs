@@ -471,6 +471,18 @@ impl Plan {
         m_ax.sort_by_key(|x| (x.sd.unsigned_abs(), x.sa.unsigned_abs()));
         n_ax.sort_by_key(|x| (x.sd.unsigned_abs(), x.sb.unsigned_abs()));
         k_ax.sort_by_key(|x| (x.sa.unsigned_abs(), x.sb.unsigned_abs()));
+        // `B`'s order instead when `B` is the larger free side and only that
+        // order gives it a unit-stride `K`: the dot path then streams it in
+        // place, as does the in-place `B` kernel.
+        let m_len: i64 = m_ax.iter().map(|x| x.extent).product();
+        let n_len: i64 = n_ax.iter().map(|x| x.extent).product();
+        if n_len >= m_len && !unit_k(&k_ax, |x| x.sb) {
+            let mut by_b = k_ax.clone();
+            by_b.sort_by_key(|x| (x.sb.unsigned_abs(), x.sa.unsigned_abs()));
+            if unit_k(&by_b, |x| x.sb) {
+                k_ax = by_b;
+            }
+        }
         h_ax.sort_by_key(|x| (x.sd.unsigned_abs(), x.sa.unsigned_abs()));
 
         let m_ax = fold_axes(m_ax);
@@ -1290,6 +1302,18 @@ fn merge_into(
 }
 
 /// Merge adjacent axes whose strides are compatible in every operand.
+/// Whether axes, fastest first, enumerate offsets `0, 1, 2, ...` in `pick`.
+fn unit_k(axes: &[Axis], pick: impl Fn(&Axis) -> i64) -> bool {
+    let mut s = 1;
+    for ax in axes {
+        if pick(ax) != s {
+            return false;
+        }
+        s *= ax.extent;
+    }
+    true
+}
+
 fn fold_axes(mut axes: Vec<Axis>) -> Vec<Axis> {
     let mut w = 0;
     for r in 0..axes.len() {

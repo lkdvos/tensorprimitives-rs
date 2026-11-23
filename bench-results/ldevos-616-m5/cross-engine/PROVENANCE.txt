@@ -26,3 +26,6 @@ raw/ab-{off,on}_*: tp only, interleaved, the change of part 28 off and on.
 ubench/{off,on}_*: harness/ubench.rs reused-plan families (gate, gemm, wb,
   deep, kc, dot, ubp), two interleaved arm pairs; score with
   harness/ab2.py "ubench/off_*" "ubench/on_*".
+
+raw/korder-{off,on}_*, ubench-korder/: the same harnesses, interleaved, with
+  K sorted by B (D75) off and on, on top of the part 28 changes.

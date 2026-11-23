@@ -363,11 +363,20 @@ Against the other engines afterwards: tenferro (NEON) **1.30**, worst case
   at `gn = 8` but its kernel reloads the gathered row per four outputs; a 2-row
   register block would halve the loads.
 * `C[xyz] = A[kl] B[lkxyz]` (`contract_scrambled`): QuasiStrided 0.21. `B`'s `K`
-  axes are contiguous as a set but not in the plan's `K` order, so `kdot` does
-  not see a unit-stride `K`; reordering `K` by the streamed operand's strides
-  would admit it.
+  axes are contiguous as a set but not in the plan's `K` order, so `kdot` did
+  not see a unit-stride `K`. Fixed below.
 * Tiny complex GEMMs (`4 x 16 x 16`): tenferro 0.69.
 
 `kdot` runs serially whatever the thread count, so the choice does not depend on
 `THREADS` and results stay bitwise identical across thread counts; a very large
 `M = 1` contraction no longer threads.
+
+**4. `K` sorted by `B` when only that order makes `B`'s `K` unit-stride (D75).**
+`Plan::new` sorts the `K` axes by `A`'s strides. When `n >= m` and `B`'s `K`
+axes form one contiguous block only in another order, it now sorts by `B`'s, so
+`kdot` and the in-place `B` kernel both see a unit-stride `K`. The order of a
+sum is free, so this only moves rounding. Interleaved, three rounds: the `023`
+`contract_scrambled` cases **0.19–0.22** (`d = 4`: ~0.5), `131` 0.61–0.89;
+nothing else moved past noise (plans with one `K` axis cannot reorder; the
+reused-plan grids 0.99–1.007). Against the other engines: tenferro (NEON)
+**1.37**, worst 0.41; QuasiStrided **1.67**, worst **0.86** (was 0.21).

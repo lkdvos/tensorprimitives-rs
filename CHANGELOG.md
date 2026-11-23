@@ -54,6 +54,9 @@ the part a prospective dependant most needs, and it has no KaC category.
   count.
 * **A deeper `kc`** when all of `M` fits one packed `A` block and `k > 2 KC`
   (D73), and two real row slivers pack `B` again past `k = 2048` (D74).
+* **`K` axes sorted by `B`'s strides** when only that order gives `B` a
+  unit-stride `K` and `B` is the larger side (D75); changes summation order
+  only.
 
 ### Changed — per-call cost
 
